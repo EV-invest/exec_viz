@@ -8,45 +8,12 @@ use trading_data_demo::nodes::{Graph, Print};
 
 use crate::api_types::{Activation, ActivationFrame, BarOut, TopoNode};
 
-/// Generics-aware last-`::`-segment: `nodes::Rsi<14>` → `Rsi<14>` (path segments inside `<>`
-/// are left as-is). `type_name` strings are build-local, display-only.
-fn trim(name: &str) -> String {
-	let mut depth = 0u32;
-	let mut start = 0;
-	let b = name.as_bytes();
-	for i in 0..b.len() {
-		match b[i] {
-			b'<' => depth += 1,
-			b'>' => depth -= 1,
-			b':' if depth == 0 && b.get(i + 1) == Some(&b':') => start = i + 2,
-			_ => {}
-		}
-	}
-	name[start..].to_string()
-}
-
-#[derive(Default)]
-struct Collect(Vec<Activation>);
-
-impl Observer for Collect {
-	fn on(&mut self, node: &'static str, deps: &'static [&'static str], out: &dyn std::fmt::Debug) {
-		let out = format!("{out:?}");
-		self.0.push(Activation {
-			node: trim(node),
-			deps: deps.iter().map(|d| trim(d)).collect(),
-			fired: out != "None",
-			out,
-		});
-	}
-}
-
 /// Step order IS topo order: one throwaway tick under a collector yields the static graph shape.
 pub fn topology() -> Vec<TopoNode> {
 	let mut c = Collect::default();
 	Graph::default().tick_obs(None, &mut c);
 	c.0.into_iter().map(|a| TopoNode { node: a.node, deps: a.deps }).collect()
 }
-
 /// One boot-time pass over the day collecting closed `Bar1m` outs → the static chart payload.
 pub fn day_bars(prints: &[Print]) -> Vec<BarOut> {
 	let mut graph = Graph::default();
@@ -65,7 +32,6 @@ pub fn day_bars(prints: &[Print]) -> Vec<BarOut> {
 	}
 	bars
 }
-
 pub struct ReplaySession {
 	prints: Arc<Vec<Print>>,
 	graph: Graph,
@@ -73,7 +39,6 @@ pub struct ReplaySession {
 	cursor: usize,
 	last: Vec<Activation>,
 }
-
 impl ReplaySession {
 	pub fn new(prints: Arc<Vec<Print>>) -> Self {
 		Self {
@@ -143,5 +108,37 @@ impl ReplaySession {
 			}
 		}
 		self.frame()
+	}
+}
+
+/// Generics-aware last-`::`-segment: `nodes::Rsi<14>` → `Rsi<14>` (path segments inside `<>`
+/// are left as-is). `type_name` strings are build-local, display-only.
+fn trim(name: &str) -> String {
+	let mut depth = 0u32;
+	let mut start = 0;
+	let b = name.as_bytes();
+	for i in 0..b.len() {
+		match b[i] {
+			b'<' => depth += 1,
+			b'>' => depth -= 1,
+			b':' if depth == 0 && b.get(i + 1) == Some(&b':') => start = i + 2,
+			_ => {}
+		}
+	}
+	name[start..].to_string()
+}
+
+#[derive(Default)]
+struct Collect(Vec<Activation>);
+
+impl Observer for Collect {
+	fn on(&mut self, node: &'static str, deps: &'static [&'static str], out: &dyn std::fmt::Debug) {
+		let out = format!("{out:?}");
+		self.0.push(Activation {
+			node: trim(node),
+			deps: deps.iter().map(|d| trim(d)).collect(),
+			fired: out != "None",
+			out,
+		});
 	}
 }

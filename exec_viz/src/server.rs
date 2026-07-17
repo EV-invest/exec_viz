@@ -25,11 +25,6 @@ use crate::{
 /// from here — the rest of the front-end is the `dx build` output.
 const ASSETS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets");
 
-#[derive(Serialize)]
-struct DayPayload {
-	bars: Vec<BarOut>,
-}
-
 pub async fn serve(cfg: AppConfig) {
 	// Reuse trading_data's demo cache: idempotent download+ingest on first boot, instant after.
 	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../trading_data/tmp/demo_cache"));
@@ -68,6 +63,10 @@ pub async fn serve(cfg: AppConfig) {
 	let listener = tokio::net::TcpListener::bind(addr).await.unwrap_or_else(|e| panic!("bind {addr}: {e}"));
 	println!("http://{addr}/");
 	axum::serve(listener, app).await.expect("axum serve");
+}
+#[derive(Serialize)]
+struct DayPayload {
+	bars: Vec<BarOut>,
 }
 
 /// Root of the built front-end (`dx build` output). Overridable via `EXEC_VIZ_WEB_DIR`; defaults
@@ -123,8 +122,14 @@ async fn handler_step_until_change(State(s): State<AppState>, Json(req): Json<St
 	s.with_session(move |sess| sess.step_until_change(&req.nodes)).await
 }
 
-/// SPA fallback: every non-asset, non-API path serves the dx bundle's index.html (200).
-async fn handler_index() -> impl IntoResponse {
+/// SPA fallback: every non-asset, non-API *GET* serves the dx bundle's index.html (200) so a
+/// client-side deep-link boots the wasm router. A non-GET here is an unknown API call (e.g. a
+/// stale server missing a route the fresh bundle calls) — 404 it loudly instead of returning
+/// HTML that the client then fails to parse as JSON, masking the real cause.
+async fn handler_index(method: axum::http::Method) -> impl IntoResponse {
+	if method != axum::http::Method::GET {
+		return (StatusCode::NOT_FOUND, format!("no such route for {method}")).into_response();
+	}
 	let path = web_dir().join("index.html");
 	match tokio::fs::read_to_string(&path).await {
 		Ok(s) => Html(s).into_response(),
