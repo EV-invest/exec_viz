@@ -1,0 +1,12 @@
+[application]
+name = "exec_viz"
+default_platform = "web"
+asset_dir = "assets"
+
+[web.app]
+title = "exec_viz"
+base_path = "/"
+
+[web.watcher]
+watch_path = ["src", "assets"]
+index_on_404 = true

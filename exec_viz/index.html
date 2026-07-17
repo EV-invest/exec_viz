@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>exec_viz</title>
+    <!-- Import map for the chart library the shim loads by bare specifier (v_utils lwc_core.js does
+         `import('lightweight-charts')`; assets/lwc_draw.js imports it too). Must precede the
+         dx-injected module scripts so bare specifiers resolve. -->
+    <script type="importmap">
+      {
+        "imports": {
+          "lightweight-charts": "https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.0/dist/lightweight-charts.production.mjs"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="main"></div>
+  </body>
+</html>
