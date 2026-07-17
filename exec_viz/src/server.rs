@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
 
 use crate::{
-	api_types::{ActivationFrame, BarOut, SeekReq, StepReq, StepUntilReq, TopoNode},
+	api_types::{ActivationFrame, BarOut, SeekReq, StepReq, StepUntilChangeReq, StepUntilReq, TopoNode},
 	config::AppConfig,
 	session::{ReplaySession, day_bars, topology},
 };
@@ -56,6 +56,7 @@ pub async fn serve(cfg: AppConfig) {
 		.route("/api/step", post(handler_step))
 		.route("/api/seek", post(handler_seek))
 		.route("/api/step_until", post(handler_step_until))
+		.route("/api/step_until_change", post(handler_step_until_change))
 		.route("/lwc_draw.js", get(handler_lwc_draw))
 		.layer(no_store)
 		.nest_service("/wasm", ServeDir::new(web.join("wasm")))
@@ -116,6 +117,10 @@ async fn handler_seek(State(s): State<AppState>, Json(req): Json<SeekReq>) -> im
 
 async fn handler_step_until(State(s): State<AppState>, Json(req): Json<StepUntilReq>) -> impl IntoResponse {
 	s.with_session(move |sess| sess.step_until(&req.node)).await
+}
+
+async fn handler_step_until_change(State(s): State<AppState>, Json(req): Json<StepUntilChangeReq>) -> impl IntoResponse {
+	s.with_session(move |sess| sess.step_until_change(&req.nodes)).await
 }
 
 /// SPA fallback: every non-asset, non-API path serves the dx bundle's index.html (200).

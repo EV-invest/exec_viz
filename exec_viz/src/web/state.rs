@@ -1,17 +1,21 @@
 //! Data layer + shared state: all `/api/*` calls, the current [`ActivationFrame`], and the
 //! free-run knobs. Every frame that lands also moves the chart's replay cursor.
 
+use std::collections::HashSet;
+
 use dioxus::prelude::*;
 use gloo_net::http::Request;
 use wasm_bindgen::{JsCast as _, JsValue};
 
-use crate::api_types::{ActivationFrame, SeekReq, StepReq, StepUntilReq, TopoNode};
+use crate::api_types::{ActivationFrame, SeekReq, StepReq, StepUntilChangeReq, StepUntilReq, TopoNode};
 
 pub static FRAME: GlobalSignal<Option<ActivationFrame>> = Signal::global(|| None);
 pub static PLAYING: GlobalSignal<bool> = Signal::global(|| false);
 /// Events per free-run poll (one poll every 50ms).
 pub static SPEED: GlobalSignal<usize> = Signal::global(|| 512);
 pub static ERROR: GlobalSignal<Option<String>> = Signal::global(|| None);
+/// Click-selected DAG nodes — the "skip to next change in any of these" set.
+pub static SELECTED: GlobalSignal<HashSet<String>> = Signal::global(HashSet::new);
 
 pub async fn fetch_topology() -> Result<Vec<TopoNode>, String> {
 	get_json("/api/topology").await
@@ -38,6 +42,22 @@ pub async fn seek(tick: usize) {
 
 pub async fn step_until(node: &str) {
 	apply(post_json("/api/step_until", &StepUntilReq { node: node.to_string() }).await);
+}
+
+/// Skip to the next change in any selected node. No selection ⇒ no-op.
+pub async fn step_until_change() {
+	let nodes: Vec<String> = SELECTED.peek().iter().cloned().collect();
+	if nodes.is_empty() {
+		return;
+	}
+	apply(post_json("/api/step_until_change", &StepUntilChangeReq { nodes }).await);
+}
+
+pub fn toggle_select(node: &str) {
+	let mut sel = SELECTED.write();
+	if !sel.remove(node) {
+		sel.insert(node.to_string());
+	}
 }
 
 pub fn toggle_play() {

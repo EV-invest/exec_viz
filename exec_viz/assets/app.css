@@ -128,6 +128,7 @@ html, body, #main {
   max-width: 240px;
   background: #161a26;
   opacity: 0.5;
+  cursor: pointer;
 }
 
 .dag-card.lit {
@@ -144,6 +145,16 @@ html, body, #main {
 .dag-card.dep {
   border-color: #7788dd;
   opacity: 0.9;
+}
+
+.dag-card.sel {
+  outline: 1px solid #e0b040;
+  opacity: 1;
+}
+
+.btn.off {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .dag-name {

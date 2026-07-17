@@ -56,3 +56,8 @@ pub struct SeekReq {
 pub struct StepUntilReq {
 	pub node: String,
 }
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StepUntilChangeReq {
+	pub nodes: Vec<String>,
+}

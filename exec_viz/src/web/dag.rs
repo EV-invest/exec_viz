@@ -38,8 +38,15 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 						{
 							let (fired, out) = acts.get(&n.node).cloned().unwrap_or((false, String::new()));
 							let dep_hl = hovered_deps.contains(&n.node);
-							let class = format!("dag-card{}{}", if fired { " lit" } else { "" }, if dep_hl { " dep" } else { "" });
+							let selected = state::SELECTED().contains(&n.node);
+							let class = format!(
+								"dag-card{}{}{}",
+								if fired { " lit" } else { "" },
+								if dep_hl { " dep" } else { "" },
+								if selected { " sel" } else { "" },
+							);
 							let name = n.node.clone();
+							let clicked = n.node.clone();
 							let node = n.node.clone();
 							rsx! {
 								div {
@@ -48,6 +55,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 									class: "{class}",
 									onmouseenter: move |_| hover.set(Some(name.clone())),
 									onmouseleave: move |_| hover.set(None),
+									onclick: move |_| state::toggle_select(&clicked),
 									div { class: "dag-name", "{node}" }
 									div { class: "dag-out", title: "{out}", "{out}" }
 								}

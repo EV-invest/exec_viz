@@ -130,4 +130,18 @@ impl ReplaySession {
 		}
 		self.frame()
 	}
+
+	/// Advance until any of `nodes` fires with an out *different from its value at call time*
+	/// (so a node stuck emitting the same value — `Screener` at `Some(false)` — is skipped
+	/// through to its next actual change), or the day ends.
+	pub fn step_until_change(&mut self, nodes: &[String]) -> ActivationFrame {
+		let baseline: std::collections::HashMap<String, String> = self.last.iter().filter(|a| nodes.contains(&a.node)).map(|a| (a.node.clone(), a.out.clone())).collect();
+		while self.cursor < self.prints.len() {
+			self.advance_one();
+			if self.last.iter().any(|a| a.fired && nodes.contains(&a.node) && baseline.get(&a.node) != Some(&a.out)) {
+				break;
+			}
+		}
+		self.frame()
+	}
 }

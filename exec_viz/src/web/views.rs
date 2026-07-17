@@ -91,6 +91,20 @@ pub fn Replay() -> Element {
 					},
 					"⏮ (0)"
 				}
+				{
+					let n_sel = state::SELECTED().len();
+					rsx! {
+						span {
+							class: if n_sel > 0 { "btn" } else { "btn off" },
+							onclick: move |_| {
+								spawn(async {
+									state::step_until_change().await;
+								});
+							},
+							if n_sel > 0 { "next Δ in {n_sel} sel (n)" } else { "next Δ (n): click nodes" }
+						}
+					}
+				}
 				span { class: "pos", "speed {state::SPEED()} ev/poll (-/=)" }
 				span { class: "pos", "b: next bar · c: next classify" }
 			}
@@ -131,6 +145,7 @@ async fn handle_key(key: &str) {
 		"0" => state::seek(0).await,
 		"b" => state::step_until("Bar1m").await,
 		"c" => state::step_until("Classify").await,
+		"n" => state::step_until_change().await,
 		_ => {}
 	}
 }

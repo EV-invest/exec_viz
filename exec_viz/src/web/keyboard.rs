@@ -5,7 +5,7 @@
 use futures::channel::mpsc::UnboundedSender;
 use wasm_bindgen::{JsCast as _, closure::Closure};
 
-const KEYS: [&str; 7] = [" ", "p", "-", "=", "0", "b", "c"];
+const KEYS: [&str; 8] = [" ", "p", "-", "=", "0", "b", "c", "n"];
 
 pub fn install(tx: UnboundedSender<String>) {
 	let cb = Closure::wrap(Box::new(move |e: web_sys::KeyboardEvent| {
