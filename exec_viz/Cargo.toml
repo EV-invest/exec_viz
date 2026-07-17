@@ -1,0 +1,15 @@
+[package]
+name = "exec_viz"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+derive-new.workspace = true
+color-eyre.workspace = true
+miette.workspace = true
+clap.workspace = true
+v_utils.workspace = true
+exec_viz_macros = { path = "../exec_viz_macros" }
+
+[lints]
+workspace = true
