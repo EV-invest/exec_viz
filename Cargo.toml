@@ -15,9 +15,13 @@ get_first = "allow"
 get_last_with_len = "allow"
 manual_is_multiple_of = "allow"
 
+[workspace.lints.rust]
+unused_features = "allow"
+
 [workspace.dependencies]
-derive-new = "^0"
-color-eyre = "^0.6.5"
-miette = { version = "^7.6.0", features = ["fancy", "serde", "syntect-highlighter"] }
 clap = { version = "^4.5.4", features = ["derive"] }
+color-eyre = "^0.6.5"
+derive-new = "^0"
+exec_viz_macros = { path = "exec_viz_macros" }
+miette = { version = "^7.6.0", features = ["fancy", "serde", "syntect-highlighter"] }
 v_utils = { version = "^2.15.0", features = ["io", "macros", "cli"] }
