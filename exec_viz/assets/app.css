@@ -104,13 +104,48 @@ html, body, #main {
   border-left: 1px solid #1e2130;
 }
 
-/* DAG activations panel: one column per topo level, node cards light up as they fire. */
+/* DAG activations panel: one column per topo level, node cards light up as they fire.
+   position: relative anchors the absolutely-positioned edge overlay to the scrolled content. */
 .dag {
+  position: relative;
   display: flex;
   gap: 14px;
   padding: 14px;
   height: 100%;
   box-sizing: border-box;
+}
+
+/* Element→element derivative edges. Above cards (z 5), below hover tips (z 20). */
+.dag-edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* Per-node element grid: one cell per flattened slot, heat-colored inline. */
+.dag-grid {
+  display: grid;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.dag-cell {
+  min-width: 24px;
+  min-height: 12px;
+  padding: 1px 3px;
+  font-family: monospace;
+  font-size: 10px;
+  text-align: right;
+  color: #d0d4dc;
+  border-radius: 2px;
+}
+
+.dag-cell.dim {
+  opacity: 0.35;
 }
 
 .dag-col {
@@ -134,7 +169,6 @@ html, body, #main {
 
 /* Full-content hover panel: nested in the card so hovering the panel keeps :hover alive (scroll). */
 .dag-tip {
-  display: none;
   position: absolute;
   top: 100%;
   right: 0;
@@ -153,10 +187,6 @@ html, body, #main {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
-}
-
-.dag-card:hover .dag-tip {
-  display: block;
 }
 
 .dag-card.lit {

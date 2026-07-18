@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use trading_data::Observer;
+use trading_data::{Fire, Observer};
 use trading_data_demo::nodes::{Graph, Print};
 
 use crate::api_types::{Activation, ActivationFrame, BarOut, TopoNode};
@@ -12,7 +12,13 @@ use crate::api_types::{Activation, ActivationFrame, BarOut, TopoNode};
 pub fn topology() -> Vec<TopoNode> {
 	let mut c = Collect::default();
 	Graph::default().tick_obs(None, &mut c);
-	c.0.into_iter().map(|a| TopoNode { node: a.node, deps: a.deps }).collect()
+	c.0.into_iter()
+		.map(|a| TopoNode {
+			node: a.node,
+			deps: a.deps,
+			dims: a.dims,
+		})
+		.collect()
 }
 /// One boot-time pass over the day collecting closed `Bar1m` outs → the static chart payload.
 pub fn day_bars(prints: &[Print]) -> Vec<BarOut> {
@@ -65,11 +71,15 @@ impl ReplaySession {
 		self.last = c.0;
 	}
 
+	/// All but the final tick run under the `()` observer — zero flattening/FD cost — so bulk
+	/// steps and seeks stay cheap; only the landing tick is fully observed.
 	pub fn step(&mut self, n: usize) -> ActivationFrame {
-		for _ in 0..n {
-			if self.cursor == self.prints.len() {
-				break;
-			}
+		let last = (self.cursor + n).min(self.prints.len());
+		while self.cursor + 1 < last {
+			self.graph.tick(Some(self.prints[self.cursor]));
+			self.cursor += 1;
+		}
+		if self.cursor < last {
 			self.advance_one();
 		}
 		self.frame()
@@ -132,13 +142,16 @@ fn trim(name: &str) -> String {
 struct Collect(Vec<Activation>);
 
 impl Observer for Collect {
-	fn on(&mut self, node: &'static str, deps: &'static [&'static str], out: &dyn std::fmt::Debug) {
-		let out = format!("{out:?}");
+	fn on(&mut self, node: &'static str, deps: &'static [&'static str], fire: Fire<'_>) {
 		self.0.push(Activation {
 			node: trim(node),
 			deps: deps.iter().map(|d| trim(d)).collect(),
-			fired: out != "None",
-			out,
+			out: format!("{}", fire.glance),
+			detail: format!("{:?}", fire.debug),
+			fired: fire.vals.is_some(),
+			dims: fire.dims.to_vec(),
+			vals: fire.vals.map(<[f64]>::to_vec),
+			jac: fire.jac.map(|j| j.iter().map(|w| if w.is_nan() { None } else { Some(*w) }).collect()),
 		});
 	}
 }

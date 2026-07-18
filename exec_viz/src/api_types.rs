@@ -5,21 +5,29 @@
 
 use serde::{Deserialize, Serialize};
 
-/// One node of the static graph, in step (= topo) order. Roots have empty `deps`.
+/// One node of the static graph, in step (= topo) order. Roots have empty `deps`. `dims` is the
+/// node's element shape (`[]` scalar); the client resolves dep dims by name from topology.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct TopoNode {
 	pub node: String,
 	pub deps: Vec<String>,
+	pub dims: Vec<usize>,
 }
 
-/// One node's output on the current tick. `out` is the node's `Debug` rendering — every node is
-/// drawable for free; `fired = out != "None"` (multi-rate nodes yield `None` off-cadence).
+/// One node's output on the current tick. `out` is the compact `Display` (card face); `detail`
+/// is the full `Debug` (hover tooltip). `vals` are the flattened elements (`None` = didn't fire);
+/// `jac` is the row-major `vals.len() × sum(dep lens)` local Jacobian, entries `None` where the
+/// engine saw no signal (NaN doesn't survive serde_json).
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Activation {
 	pub node: String,
 	pub deps: Vec<String>,
 	pub out: String,
+	pub detail: String,
 	pub fired: bool,
+	pub dims: Vec<usize>,
+	pub vals: Option<Vec<f64>>,
+	pub jac: Option<Vec<Option<f64>>>,
 }
 
 /// Replay position + the last tick's activations. `tick` counts consumed events (0 = nothing
