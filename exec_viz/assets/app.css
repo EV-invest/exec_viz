@@ -91,10 +91,59 @@ html, body, #main {
   display: flex;
 }
 
+/* Flex column so the gates pane (toggle: g) docks under the chart host. */
 .chart-pane {
   flex: 1 1 56%;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chart-host {
+  flex: 1 1 auto;
+  min-height: 0;
   position: relative;
+}
+
+/* One shared logic-analyzer strip: a row per gate, square-wave trace over ticks. */
+.gates-pane {
+  flex: 0 0 auto;
+  max-height: 90px;
+  overflow-y: auto;
+  padding: 4px 8px;
+  border-top: 1px solid #1e2130;
+}
+
+.gate-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+}
+
+.gate-name {
+  font-family: monospace;
+  font-size: 11px;
+  color: #8899aa;
+  flex: 0 0 auto;
+}
+
+.gate-state {
+  font-family: monospace;
+  font-size: 11px;
+  color: #556070;
+  flex: 0 0 52px;
+  text-align: right;
+}
+
+.gate-state.open {
+  color: #26a69a;
+}
+
+.gate-wave {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
 }
 
 .dag-pane {
@@ -210,6 +259,16 @@ html, body, #main {
   opacity: 1;
 }
 
+/* Gate nodes: dashed border + glyph — control, not data. */
+.dag-card.gate {
+  border-style: dashed;
+}
+
+.dag-card.gate .dag-name::after {
+  content: " ⏻";
+  color: #e0b040;
+}
+
 .btn.off {
   opacity: 0.45;
   cursor: default;
@@ -219,6 +278,23 @@ html, body, #main {
   font-weight: 600;
   font-size: 12px;
   color: #d0d4dc;
+}
+
+/* Unified crosshair tooltip: one floating div the lwc shim positions over the chart host. */
+.tooltip {
+  position: absolute;
+  z-index: 10;
+  pointer-events: none;
+  background: rgba(19, 23, 34, 0.92);
+  border: 1px solid #2a3040;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-family: monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #d0d4dc;
+  white-space: pre;
+  max-width: 60%;
 }
 
 .dag-out {

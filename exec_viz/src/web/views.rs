@@ -106,7 +106,7 @@ pub fn Replay() -> Element {
 					}
 				}
 				span { class: "pos", "speed {state::SPEED()} ev/poll (-/=)" }
-				span { class: "pos", "b: next bar · c: next classify" }
+				span { class: "pos", "b: next bar · c: next classify · g: gates" }
 			}
 			if let Some(e) = state::ERROR() {
 				div { class: "banner", "{e}" }
@@ -116,7 +116,12 @@ pub fn Replay() -> Element {
 			}
 			div { class: "split",
 				div { class: "chart-pane",
-					div { id: CHART_ID, style: "position:absolute;inset:0" }
+					div { class: "chart-host",
+						div { id: CHART_ID, style: "position:absolute;inset:0" }
+					}
+					if state::GATES_VISIBLE() {
+						GatesPanel {}
+					}
 				}
 				div { class: "dag-pane",
 					match &*topology.read() {
@@ -146,8 +151,61 @@ async fn handle_key(key: &str) {
 		"b" => state::step_until("Bar1m").await,
 		"c" => state::step_until("Classify").await,
 		"n" => state::step_until_change().await,
+		"g" => state::toggle_gates(),
 		_ => {}
 	}
+}
+
+/// All gates share this one pane: per gate its current state and a logic-analyzer square wave
+/// of the transitions seen this session (x = tick).
+#[component]
+fn GatesPanel() -> Element {
+	let tick = state::FRAME().map(|f| f.tick).unwrap_or(0);
+	let hist = state::GATE_HIST();
+	rsx! {
+		div { class: "gates-pane",
+			for g in state::GATES() {
+				{
+					let tr = hist.get(&g).cloned().unwrap_or_default();
+					let open = tr.last().is_some_and(|&(_, b)| b);
+					rsx! {
+						div { class: "gate-row", key: "{g}",
+							span { class: if open { "gate-state open" } else { "gate-state" }, if open { "open" } else { "closed" } }
+							span { class: "gate-name", "{g}" }
+							svg { class: "gate-wave", view_box: "0 0 1000 30", preserve_aspect_ratio: "none",
+								polyline {
+									points: "{wave_points(&tr, tick)}",
+									fill: "none",
+									stroke: "#26a69a",
+									stroke_width: "1.5",
+									vector_effect: "non-scaling-stroke",
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+/// Square-wave polyline over (tick, state) transitions: x ∈ [0, tick] → [0, 1000], open = high.
+fn wave_points(tr: &[(usize, bool)], tick: usize) -> String {
+	let x = |t: usize| t as f64 / tick.max(1) as f64 * 1000.0;
+	let y = |b: bool| if b { 4 } else { 26 };
+	let mut pts = String::new();
+	let mut prev = None;
+	for &(t, b) in tr {
+		if let Some(pb) = prev {
+			pts.push_str(&format!("{:.1},{} ", x(t), y(pb)));
+		}
+		pts.push_str(&format!("{:.1},{} ", x(t), y(b)));
+		prev = Some(b);
+	}
+	if let Some(pb) = prev {
+		pts.push_str(&format!("{:.1},{}", x(tick), y(pb)));
+	}
+	pts
 }
 
 fn chart_el() -> Option<web_sys::HtmlElement> {

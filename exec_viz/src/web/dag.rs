@@ -20,6 +20,9 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	let mut hover = use_signal(|| Hover::None);
 	let mut ranges = use_signal(HashMap::<String, Vec<(f64, f64)>>::new);
 	let mut edges = use_signal(Vec::<Edge>::new);
+	let mut ctrl = use_signal(Vec::<CtrlEdge>::new);
+
+	let gate_set: std::collections::HashSet<String> = topology.iter().flat_map(|n| n.gates.iter().cloned()).collect();
 
 	// `level(node) = 1 + max(level(deps))`, roots 0 — one pass works because the server sends
 	// nodes in step (= topo) order.
@@ -50,11 +53,13 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 			}
 		}
 		let dep_lens: HashMap<String, usize> = topo.iter().map(|n| (n.node.clone(), n.dims.iter().product())).collect();
+		let pairs: Vec<(String, String)> = topo.iter().flat_map(|n| n.gates.iter().map(|g| (g.clone(), n.node.clone()))).collect();
 		let acts = frame.activations.clone();
 		spawn(async move {
 			// measure one timer tick after the DOM patch so fresh cell rects are non-zero
 			gloo_timers::future::TimeoutFuture::new(0).await;
 			edges.set(measure_edges(&acts, &dep_lens));
+			ctrl.set(measure_ctrl(&pairs));
 		});
 	});
 
@@ -77,10 +82,11 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 							let dep_hl = hovered_deps.contains(&n.node);
 							let selected = state::SELECTED().contains(&n.node);
 							let class = format!(
-								"dag-card{}{}{}",
+								"dag-card{}{}{}{}",
 								if fired { " lit" } else { "" },
 								if dep_hl { " dep" } else { "" },
 								if selected { " sel" } else { "" },
+								if gate_set.contains(&n.node) { " gate" } else { "" },
 							);
 							let name = n.node.clone();
 							let clicked = n.node.clone();
@@ -93,6 +99,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 							rsx! {
 								div {
 									key: "{node}",
+									id: "dagcard-{node}",
 									class: "{class}",
 									onmouseenter: move |_| hover.set(Hover::Card(name.clone())),
 									onmouseleave: move |_| hover.set(Hover::None),
@@ -136,6 +143,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 			svg { class: "dag-edges",
 				{
 					let h = hover();
+					let hc = h.clone();
 					rsx! {
 						for e in edges.read().iter().filter(move |e| match &h {
 							Hover::None => true,
@@ -151,6 +159,23 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 								stroke: if e.w > 0.0 { "#26a69a" } else { "#ef5350" },
 								stroke_width: "{1.0 + 2.0 * e.mag}",
 								opacity: "{0.15 + 0.85 * e.mag}",
+							}
+						}
+						// control edges (gate ⇢ gated node): card-level, dashed — not data flow
+						for e in ctrl.read().iter().filter(move |e| match &hc {
+							Hover::None => true,
+							Hover::Card(n) | Hover::Cell(n, _) => e.from == *n || e.to == *n,
+						}) {
+							line {
+								key: "ctrl-{e.from}-{e.to}",
+								x1: "{e.x1}",
+								y1: "{e.y1}",
+								x2: "{e.x2}",
+								y2: "{e.y2}",
+								stroke: "#e0b040",
+								stroke_dasharray: "4 3",
+								stroke_width: "1.2",
+								opacity: "0.6",
 							}
 						}
 					}
@@ -245,6 +270,42 @@ fn measure_edges(acts: &[Activation], dep_lens: &HashMap<String, usize>) -> Vec<
 		}
 	}
 	out
+}
+
+/// A control edge (gate ⇢ gated node) at card granularity, same pixel space as [`Edge`].
+#[derive(Clone, PartialEq)]
+struct CtrlEdge {
+	from: String,
+	to: String,
+	x1: f64,
+	y1: f64,
+	x2: f64,
+	y2: f64,
+}
+
+fn measure_ctrl(pairs: &[(String, String)]) -> Vec<CtrlEdge> {
+	let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+		return Vec::new();
+	};
+	let Some(root) = doc.get_element_by_id(DAG_ID) else {
+		return Vec::new();
+	};
+	let root_rect = root.get_bounding_client_rect();
+	pairs
+		.iter()
+		.filter_map(|(g, n)| {
+			let fr = doc.get_element_by_id(&format!("dagcard-{g}"))?.get_bounding_client_rect();
+			let tr = doc.get_element_by_id(&format!("dagcard-{n}"))?.get_bounding_client_rect();
+			(fr.width() != 0.0 && tr.width() != 0.0).then(|| CtrlEdge {
+				from: g.clone(),
+				to: n.clone(),
+				x1: fr.right() - root_rect.left(),
+				y1: fr.top() + fr.height() / 2.0 - root_rect.top(),
+				x2: tr.left() - root_rect.left(),
+				y2: tr.top() + tr.height() / 2.0 - root_rect.top(),
+			})
+		})
+		.collect()
 }
 
 fn heat(range: Option<&(f64, f64)>, v: f64) -> f64 {

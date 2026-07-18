@@ -34,6 +34,7 @@ pub fn topology<G: Dag>() -> Vec<TopoNode> {
 		.map(|(a, s)| TopoNode {
 			node: a.node,
 			deps: a.deps,
+			gates: a.gates,
 			dims: a.dims,
 			sketch: s.into(),
 		})
@@ -50,7 +51,7 @@ pub fn day_series<G: Dag>(events: &[G::Event]) -> Vec<SeriesOut> {
 		nodes: Vec<SeriesOut>,
 	}
 	impl Observer for Sampler {
-		fn on(&mut self, node: &'static str, deps: &'static [&'static str], fire: Fire<'_>) {
+		fn on(&mut self, node: &'static str, deps: &'static [&'static str], _: &'static [&'static str], fire: Fire<'_>) {
 			if self.nodes.len() <= self.idx {
 				assert_eq!(self.nodes.len(), self.idx, "step order shifted between ticks");
 				self.nodes.push(SeriesOut {
@@ -190,11 +191,12 @@ fn trim(name: &str) -> String {
 struct Collect(Vec<Activation>, Vec<&'static Sketch>);
 
 impl Observer for Collect {
-	fn on(&mut self, node: &'static str, deps: &'static [&'static str], fire: Fire<'_>) {
+	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [&'static str], fire: Fire<'_>) {
 		self.1.push(fire.sketch);
 		self.0.push(Activation {
 			node: trim(node),
 			deps: deps.iter().map(|d| trim(d)).collect(),
+			gates: gates.iter().map(|g| trim(g)).collect(),
 			out: format!("{}", fire.glance),
 			detail: format!("{:?}", fire.debug),
 			fired: fire.vals.is_some(),

@@ -13,8 +13,7 @@
 import { ColorType, CrosshairMode, LineStyle, CandlestickSeries, HistogramSeries, LineSeries, createTextWatermark } from "lightweight-charts";
 
 const GRID = "#1e2130";
-const LONG = "rgba(38,166,154,1.0)";
-const SHORT = "rgba(239,83,80,1.0)";
+const CANDLE = "rgba(255,255,255,0.5)";
 const CURSOR = "rgba(224,176,64,0.9)";
 const BUCKET_SEC = 60;
 const MAIN_INK = { l: 0.72, c: 0.13, a: 1.0 };
@@ -37,6 +36,66 @@ function oklch(ink, hue, k = 1) {
     _colorCache.set(css, out);
   }
   return out;
+}
+
+function fmt(v) {
+  if (v == null || Number.isNaN(v)) return "·";
+  const a = Math.abs(v);
+  if (a >= 1000) return v.toFixed(1);
+  if (a >= 1) return v.toFixed(4);
+  return v.toPrecision(4);
+}
+
+function tipFrom(tip, rows, timeOf, textOf, pane, color) {
+  const m = new Map();
+  for (const r of rows) {
+    const t = textOf(r);
+    if (t != null) m.set(timeOf(r), t);
+  }
+  tip.push({ map: m, pane, color });
+}
+
+function attachTooltip(div, chart, tip, state) {
+  const tt = document.createElement("div");
+  tt.className = "tooltip";
+  tt.style.display = "none";
+  div.appendChild(tt);
+  state.tt = tt;
+
+  const onCross = (param) => {
+    if (param.time === undefined || !param.point) {
+      tt.style.display = "none";
+      return;
+    }
+    const lines = [];
+    for (const e of tip) if (e.map.has(param.time)) lines.push({ text: e.map.get(param.time), pane: e.pane, color: e.color });
+    if (lines.length === 0) {
+      tt.style.display = "none";
+      return;
+    }
+    tt.replaceChildren(...lines.map((l) => {
+      const d = document.createElement("div");
+      d.textContent = l.text;
+      if (l.color) d.style.color = l.color;
+      if (param.paneIndex != null && l.pane !== param.paneIndex) d.style.opacity = "0.35";
+      return d;
+    }));
+    tt.style.display = "block";
+  };
+  chart.subscribeCrosshairMove(onCross);
+  state.crosshair = onCross;
+
+  const onMove = (e) => {
+    const r = div.getBoundingClientRect();
+    let x = e.clientX - r.left + 14;
+    let y = e.clientY - r.top + 14;
+    if (x + tt.offsetWidth > r.width) x = e.clientX - r.left - tt.offsetWidth - 8;
+    if (y + tt.offsetHeight > r.height) y = Math.max(0, e.clientY - r.top - tt.offsetHeight - 8);
+    tt.style.left = `${x}px`;
+    tt.style.top = `${y}px`;
+  };
+  div.addEventListener("mousemove", onMove);
+  state.ttMove = onMove;
 }
 
 // Vertical replay-position line on the price pane. `set(tSec)` snaps to the bar grid and requests
@@ -73,6 +132,9 @@ function teardown(chart) {
   const st = chart.__ev;
   if (!st) return;
   for (const s of st.series) chart.removeSeries(s);
+  if (st.crosshair) chart.unsubscribeCrosshairMove(st.crosshair);
+  if (st.ttMove) chart.chartElement().removeEventListener("mousemove", st.ttMove);
+  if (st.tt) st.tt.remove();
   chart.__ev = null;
 }
 
@@ -102,6 +164,10 @@ function addIndicatorPanes(chart, data, st) {
         const [minValue, maxValue] = s.sketch.range;
         opts.autoscaleInfoProvider = () => ({ priceRange: { minValue, maxValue } });
       }
+      const label = (k) => s.sketch.labels[k] ?? (n > 1 ? `[${k}]` : "");
+      tipFrom(st.tip, s.points, (p) => p.ts_ms / 1000,
+        (p) => `${s.node} ${Array.from({ length: n }, (_, k) => `${label(k)} ${fmt(p.vals[k])}`).join("  ").trim()}`,
+        pane, oklch(ink(s, 0), hue(s, 0)));
       let guideHost = null;
       if (n > 1) {
         // stacked histogram: per-point cumulative segments, largest drawn first so each later
@@ -151,16 +217,19 @@ export function draw(chart, data, viewSpec) {
     timeScale: { timeVisible: true, secondsVisible: false, borderColor: GRID, minBarSpacing: 0.001 },
   });
 
-  const st = { series: [] };
-  const candle = chart.addSeries(CandlestickSeries, { upColor: LONG, downColor: SHORT, borderVisible: false, wickUpColor: LONG, wickDownColor: SHORT }, 0);
+  const st = { series: [], tip: [], tt: null, ttMove: null, crosshair: null };
+  const candle = chart.addSeries(CandlestickSeries, { upColor: CANDLE, downColor: CANDLE, borderVisible: false, wickUpColor: CANDLE, wickDownColor: CANDLE }, 0);
   candle.setData(data.bars.map((b) => ({ time: b.ts_ms / 1000, open: b.open, high: b.high, low: b.low, close: b.close })));
   st.series.push(candle);
+  tipFrom(st.tip, data.bars, (b) => b.ts_ms / 1000, (b) => `O ${fmt(b.open)}  H ${fmt(b.high)}  L ${fmt(b.low)}  C ${fmt(b.close)}`, 0, CANDLE);
 
   const vol = chart.addSeries(HistogramSeries, { color: "rgba(120,120,180,0.5)", priceScaleId: "right", priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false }, 1);
   vol.setData(data.bars.map((b) => ({ time: b.ts_ms / 1000, value: b.volume })));
   st.series.push(vol);
+  tipFrom(st.tip, data.bars, (b) => b.ts_ms / 1000, (b) => `V ${fmt(b.volume)}`, 1, "rgba(120,120,180,0.9)");
 
   addIndicatorPanes(chart, data, st);
+  attachTooltip(chart.chartElement(), chart, st.tip, st);
 
   chart.panes().forEach((p, i) => p.setStretchFactor(i === 0 ? 3 : 1));
 

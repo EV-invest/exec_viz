@@ -7,10 +7,12 @@ use serde::{Deserialize, Serialize};
 
 /// One node of the static graph, in step (= topo) order. Roots have empty `deps`. `dims` is the
 /// node's element shape (`[]` scalar); the client resolves dep dims by name from topology.
+/// `gates` are the node's control edges — the client's gate set is the union over all nodes.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct TopoNode {
 	pub node: String,
 	pub deps: Vec<String>,
+	pub gates: Vec<String>,
 	pub dims: Vec<usize>,
 	pub sketch: SketchOut,
 }
@@ -74,6 +76,7 @@ pub struct DayOut {
 pub struct Activation {
 	pub node: String,
 	pub deps: Vec<String>,
+	pub gates: Vec<String>,
 	pub out: String,
 	pub detail: String,
 	pub fired: bool,
