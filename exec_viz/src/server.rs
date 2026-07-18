@@ -83,18 +83,6 @@ struct AppState<G: Dag> {
 	/// Pre-serialized `/api/day` body — computed once at boot, immutable.
 	day: Arc<String>,
 }
-
-// Manual: derive(Clone) would demand `G: Clone` — the fields are all Arcs.
-impl<G: Dag> Clone for AppState<G> {
-	fn clone(&self) -> Self {
-		Self {
-			session: self.session.clone(),
-			topology: self.topology.clone(),
-			day: self.day.clone(),
-		}
-	}
-}
-
 impl<G: Dag + Send + 'static> AppState<G>
 where
 	G::Event: Send + Sync + 'static,
@@ -104,6 +92,17 @@ where
 	async fn with_session(&self, f: impl FnOnce(&mut ReplaySession<G>) -> ActivationFrame + Send + 'static) -> Json<ActivationFrame> {
 		let mut guard = self.session.clone().lock_owned().await;
 		Json(tokio::task::spawn_blocking(move || f(&mut guard)).await.expect("session task panicked"))
+	}
+}
+
+// Manual: derive(Clone) would demand `G: Clone` — the fields are all Arcs.
+impl<G: Dag> Clone for AppState<G> {
+	fn clone(&self) -> Self {
+		Self {
+			session: self.session.clone(),
+			topology: self.topology.clone(),
+			day: self.day.clone(),
+		}
 	}
 }
 

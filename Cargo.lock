@@ -4901,6 +4901,7 @@ version = "0.3.0"
 dependencies = [
  "flate2",
  "jiff",
+ "serde_json",
  "trading_data",
  "ureq",
  "v_utils",
@@ -4919,6 +4920,7 @@ dependencies = [
  "parquet",
  "thiserror 2.0.18",
  "tracing",
+ "trading_data_dag",
  "v_utils",
 ]
 

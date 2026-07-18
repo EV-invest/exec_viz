@@ -15,25 +15,6 @@ struct Cli {
 	settings_flags: SettingsFlags,
 }
 
-/// One boot-time pass over the day collecting closed `Bar1m` outs → the static chart payload.
-fn day_bars(prints: &[Print]) -> Vec<BarOut> {
-	let mut graph = Graph::default();
-	let mut bars = Vec::new();
-	for &p in prints {
-		if let Some(b) = graph.tick(Some(p)).bar {
-			bars.push(BarOut {
-				ts_ms: b.ts_open / 1_000_000,
-				open: b.open,
-				high: b.high,
-				low: b.low,
-				close: b.close,
-				volume: b.vol_quote,
-			});
-		}
-	}
-	bars
-}
-
 #[tokio::main]
 async fn main() {
 	tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).init();
@@ -53,3 +34,22 @@ async fn main() {
 	let bars = day_bars(&prints);
 	exec_viz::serve::<Graph>(cfg, prints, bars).await;
 }
+/// One boot-time pass over the day collecting closed `Bar1m` outs → the static chart payload.
+fn day_bars(prints: &[Print]) -> Vec<BarOut> {
+	let mut graph = Graph::default();
+	let mut bars = Vec::new();
+	for &p in prints {
+		if let Some(b) = graph.tick(Some(p)).bar {
+			bars.push(BarOut {
+				ts_ms: b.ts_open / 1_000_000,
+				open: b.open,
+				high: b.high,
+				low: b.low,
+				close: b.close,
+				volume: b.vol_quote,
+			});
+		}
+	}
+	bars
+}
+

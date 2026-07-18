@@ -64,7 +64,7 @@ web-sys = { workspace = true, features = ["Document", "DomRect", "Element", "Htm
 
 # Example-only: the demo runner. Never in the lib's dep graph.
 [dev-dependencies]
-trading_data_demo = { workspace = true }
+trading_data_demo.workspace = true
 
 [[example]]
 name = "demo"
