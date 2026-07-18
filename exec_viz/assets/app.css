@@ -121,6 +121,7 @@ html, body, #main {
 }
 
 .dag-card {
+  position: relative;
   border: 1px solid #2a3040;
   border-radius: 4px;
   padding: 6px 8px;
@@ -129,6 +130,33 @@ html, body, #main {
   background: #161a26;
   opacity: 0.5;
   cursor: pointer;
+}
+
+/* Full-content hover panel: nested in the card so hovering the panel keeps :hover alive (scroll). */
+.dag-tip {
+  display: none;
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 20;
+  margin-top: 4px;
+  padding: 8px 10px;
+  max-width: 640px;
+  max-height: 70vh;
+  overflow: auto;
+  border: 1px solid #3a4258;
+  border-radius: 4px;
+  background: #0d1017;
+  color: #d0d4dc;
+  font-family: monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
+}
+
+.dag-card:hover .dag-tip {
+  display: block;
 }
 
 .dag-card.lit {

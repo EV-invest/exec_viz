@@ -57,7 +57,10 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 									onmouseleave: move |_| hover.set(None),
 									onclick: move |_| state::toggle_select(&clicked),
 									div { class: "dag-name", "{node}" }
-									div { class: "dag-out", title: "{out}", "{out}" }
+									div { class: "dag-out", "{out}" }
+									if !out.is_empty() {
+										div { class: "dag-tip", "{out}" }
+									}
 								}
 							}
 						}
