@@ -3,28 +3,28 @@ name = "exec_viz"
 version = "0.1.0"
 edition = "2024"
 
-# One `exec_viz` bin, feature-dispatched in `main.rs`: `server` → axum replay server, `web` →
-# `dioxus::launch` (dx builds this same bin to wasm with `--no-default-features --features web`).
+# The `exec_viz` bin is the Dioxus wasm front-end (dx builds it with `--no-default-features
+# --features web`). The server is a lib (`serve`, generic over any `Dag`); `examples/demo.rs`
+# is the demo-day runner.
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [[bin]]
 name = "exec_viz"
 path = "src/main.rs"
+required-features = ["web"]
 
 [features]
 default = ["server"]
-# The axum replay server. Native only — trading_data's arrow/parquet/ureq don't build on wasm.
+# The axum replay server, generic over `trading_data_dag::Dag`. Native only.
 server = [
     "dep:axum",
     "dep:clap",
-    "dep:jiff",
     "dep:tokio",
     "dep:tower-http",
     "dep:tracing",
     "dep:tracing-subscriber",
-    "dep:trading_data",
-    "dep:trading_data_demo",
+    "dep:trading_data_dag",
 ]
 # The Dioxus WASM front-end (the `[lib]`, built with `--target wasm32`). Never compiles the server paths.
 web = [
@@ -49,7 +49,6 @@ futures = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
 gloo-net = { workspace = true, optional = true }
 gloo-timers = { workspace = true, optional = true }
-jiff = { workspace = true, optional = true }
 js-sys = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
@@ -57,12 +56,19 @@ tokio = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
-trading_data = { workspace = true, optional = true }
-trading_data_demo = { workspace = true, optional = true }
+trading_data_dag = { workspace = true, optional = true }
 v_utils.workspace = true
 wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 web-sys = { workspace = true, features = ["Document", "DomRect", "Element", "HtmlElement", "Window", "KeyboardEvent", "console"], optional = true }
+
+# Example-only: the demo runner. Never in the lib's dep graph.
+[dev-dependencies]
+trading_data_demo = { workspace = true }
+
+[[example]]
+name = "demo"
+required-features = ["server"]
 
 [lints]
 workspace = true

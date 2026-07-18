@@ -1,12 +1,12 @@
 #![feature(default_field_values)]
-//! DAG-activations replay for `trading_data`'s step-graph: one computation structure, multiple
+//! DAG-activations replay for any [`trading_data_dag::Dag`]: one computation structure, multiple
 //! interpretations. Prod evals via `step`; here the same tick chain runs under a recording
-//! [`trading_data::Observer`], and the browser replays a day event-by-event — layers lighting up
-//! per tick, values flowing — next to the day's candle chart.
+//! [`trading_data_dag::Observer`], and the browser replays an event stream tick-by-tick — layers
+//! lighting up, values flowing — next to a candle chart.
 //!
 //! No trace persistence: **determinism is the storage**. The server holds a replay session
-//! (prints + graph + cursor) and recomputes activation frames on demand; backward seek is a
-//! fresh graph re-run from 0 (~1s for the full day).
+//! (events + graph + cursor) and recomputes activation frames on demand; backward seek is a
+//! fresh graph re-run from 0 (~1s for a full day).
 
 pub mod api_types;
 

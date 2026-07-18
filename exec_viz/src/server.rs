@@ -14,29 +14,29 @@ use axum::{
 use serde::Serialize;
 use tokio::sync::Mutex;
 use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
+use trading_data_dag::Dag;
 
 use crate::{
 	api_types::{ActivationFrame, BarOut, SeekReq, StepReq, StepUntilChangeReq, StepUntilReq, TopoNode},
 	config::AppConfig,
-	session::{ReplaySession, day_bars, topology},
+	session::{ReplaySession, topology},
 };
 
 /// Compile-time root of the static assets dir (sibling of `src/`); only `lwc_draw.js` is served
 /// from here — the rest of the front-end is the `dx build` output.
 const ASSETS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets");
 
-pub async fn serve(cfg: AppConfig) {
-	// Reuse trading_data's demo cache: idempotent download+ingest on first boot, instant after.
-	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../trading_data/tmp/demo_cache"));
-	let catalog = trading_data_demo::ensure_catalog(&cache);
-	let prints = Arc::new(trading_data_demo::load_prints(&catalog));
-	assert!(!prints.is_empty(), "demo day produced no prints");
-	let day = serde_json::to_string(&DayPayload { bars: day_bars(&prints) }).expect("day payload serializes");
-	tracing::info!(prints = prints.len(), "replay session ready");
+pub async fn serve<G>(cfg: AppConfig, events: Vec<G::Event>, bars: Vec<BarOut>)
+where
+	G: Dag + Send + 'static,
+	G::Event: Send + Sync + 'static, {
+	assert!(!events.is_empty(), "empty event stream");
+	let day = serde_json::to_string(&DayPayload { bars }).expect("day payload serializes");
+	tracing::info!(events = events.len(), "replay session ready");
 
 	let state = AppState {
-		session: Arc::new(Mutex::new(ReplaySession::new(prints))),
-		topology: Arc::new(topology()),
+		session: Arc::new(Mutex::new(ReplaySession::<G>::new(events))),
+		topology: Arc::new(topology::<G>()),
 		day: Arc::new(day),
 	};
 
@@ -45,13 +45,13 @@ pub async fn serve(cfg: AppConfig) {
 	let no_store = SetResponseHeaderLayer::overriding(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
 	let web = web_dir();
 	let app = Router::new()
-		.route("/api/topology", get(handler_topology))
-		.route("/api/day", get(handler_day))
-		.route("/api/status", get(handler_status))
-		.route("/api/step", post(handler_step))
-		.route("/api/seek", post(handler_seek))
-		.route("/api/step_until", post(handler_step_until))
-		.route("/api/step_until_change", post(handler_step_until_change))
+		.route("/api/topology", get(handler_topology::<G>))
+		.route("/api/day", get(handler_day::<G>))
+		.route("/api/status", get(handler_status::<G>))
+		.route("/api/step", post(handler_step::<G>))
+		.route("/api/seek", post(handler_seek::<G>))
+		.route("/api/step_until", post(handler_step_until::<G>))
+		.route("/api/step_until_change", post(handler_step_until_change::<G>))
 		.route("/lwc_draw.js", get(handler_lwc_draw))
 		.layer(no_store)
 		.nest_service("/wasm", ServeDir::new(web.join("wasm")))
@@ -77,48 +77,69 @@ fn web_dir() -> PathBuf {
 		.unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/dx/exec_viz/debug/web/public")))
 }
 
-#[derive(Clone)]
-struct AppState {
-	session: Arc<Mutex<ReplaySession>>,
+struct AppState<G: Dag> {
+	session: Arc<Mutex<ReplaySession<G>>>,
 	topology: Arc<Vec<TopoNode>>,
 	/// Pre-serialized `/api/day` body — computed once at boot, immutable.
 	day: Arc<String>,
 }
 
-impl AppState {
+// Manual: derive(Clone) would demand `G: Clone` — the fields are all Arcs.
+impl<G: Dag> Clone for AppState<G> {
+	fn clone(&self) -> Self {
+		Self {
+			session: self.session.clone(),
+			topology: self.topology.clone(),
+			day: self.day.clone(),
+		}
+	}
+}
+
+impl<G: Dag + Send + 'static> AppState<G>
+where
+	G::Event: Send + Sync + 'static,
+{
 	/// Run a session mutation off the async runtime: a backward seek re-runs the whole day
 	/// (~1s), and free-run steps can be thousands of events.
-	async fn with_session(&self, f: impl FnOnce(&mut ReplaySession) -> ActivationFrame + Send + 'static) -> Json<ActivationFrame> {
+	async fn with_session(&self, f: impl FnOnce(&mut ReplaySession<G>) -> ActivationFrame + Send + 'static) -> Json<ActivationFrame> {
 		let mut guard = self.session.clone().lock_owned().await;
 		Json(tokio::task::spawn_blocking(move || f(&mut guard)).await.expect("session task panicked"))
 	}
 }
 
-async fn handler_topology(State(s): State<AppState>) -> impl IntoResponse {
+async fn handler_topology<G: Dag>(State(s): State<AppState<G>>) -> impl IntoResponse {
 	Json(s.topology.as_ref().clone())
 }
 
-async fn handler_day(State(s): State<AppState>) -> impl IntoResponse {
+async fn handler_day<G: Dag>(State(s): State<AppState<G>>) -> impl IntoResponse {
 	([(header::CONTENT_TYPE, HeaderValue::from_static("application/json"))], s.day.as_str().to_owned())
 }
 
-async fn handler_status(State(s): State<AppState>) -> impl IntoResponse {
+async fn handler_status<G: Dag>(State(s): State<AppState<G>>) -> impl IntoResponse {
 	Json(s.session.lock().await.frame())
 }
 
-async fn handler_step(State(s): State<AppState>, Json(req): Json<StepReq>) -> impl IntoResponse {
+async fn handler_step<G: Dag + Send + 'static>(State(s): State<AppState<G>>, Json(req): Json<StepReq>) -> impl IntoResponse
+where
+	G::Event: Send + Sync + 'static, {
 	s.with_session(move |sess| sess.step(req.n)).await
 }
 
-async fn handler_seek(State(s): State<AppState>, Json(req): Json<SeekReq>) -> impl IntoResponse {
+async fn handler_seek<G: Dag + Send + 'static>(State(s): State<AppState<G>>, Json(req): Json<SeekReq>) -> impl IntoResponse
+where
+	G::Event: Send + Sync + 'static, {
 	s.with_session(move |sess| sess.seek(req.tick)).await
 }
 
-async fn handler_step_until(State(s): State<AppState>, Json(req): Json<StepUntilReq>) -> impl IntoResponse {
+async fn handler_step_until<G: Dag + Send + 'static>(State(s): State<AppState<G>>, Json(req): Json<StepUntilReq>) -> impl IntoResponse
+where
+	G::Event: Send + Sync + 'static, {
 	s.with_session(move |sess| sess.step_until(&req.node)).await
 }
 
-async fn handler_step_until_change(State(s): State<AppState>, Json(req): Json<StepUntilChangeReq>) -> impl IntoResponse {
+async fn handler_step_until_change<G: Dag + Send + 'static>(State(s): State<AppState<G>>, Json(req): Json<StepUntilChangeReq>) -> impl IntoResponse
+where
+	G::Event: Send + Sync + 'static, {
 	s.with_session(move |sess| sess.step_until_change(&req.nodes)).await
 }
 
