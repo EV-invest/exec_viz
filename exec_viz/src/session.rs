@@ -1,21 +1,90 @@
 //! Replay session over an event stream: events + graph + cursor. No trace persistence —
 //! determinism is the storage. Forward = tick; backward = fresh graph re-run from 0.
 
-use trading_data_dag::{Dag, Fire, Observer, Stamped};
+use trading_data_dag::{Dag, Fire, Observer, Sketch, Stamped};
 
-use crate::api_types::{Activation, ActivationFrame, TopoNode};
+use crate::api_types::{Activation, ActivationFrame, GuideOut, InkOut, PointOut, SeriesOut, SketchOut, TopoNode};
+
+impl From<&Sketch> for SketchOut {
+	fn from(s: &Sketch) -> Self {
+		let ink = |i: &trading_data_dag::Ink| InkOut { l: i.l, c: i.c, a: i.a };
+		SketchOut {
+			range: s.range,
+			guides: s
+				.guides
+				.iter()
+				.map(|g| GuideOut {
+					label: g.label.to_string(),
+					value: g.value,
+					ink: ink(&g.ink),
+				})
+				.collect(),
+			labels: s.labels.iter().map(|l| l.to_string()).collect(),
+			inks: s.inks.iter().map(ink).collect(),
+		}
+	}
+}
 
 /// Step order IS topo order: one throwaway tick under a collector yields the static graph shape.
 pub fn topology<G: Dag>() -> Vec<TopoNode> {
 	let mut c = Collect::default();
 	G::default().tick_obs(None, &mut c);
 	c.0.into_iter()
-		.map(|a| TopoNode {
+		.zip(c.1)
+		.map(|(a, s)| TopoNode {
 			node: a.node,
 			deps: a.deps,
 			dims: a.dims,
+			sketch: s.into(),
 		})
 		.collect()
+}
+
+/// One boot-time observed pass over the whole day: per node, the last fired vals in each 1m
+/// bucket — the static full-day series the chart's indicator panes draw.
+pub fn day_series<G: Dag>(events: &[G::Event]) -> Vec<SeriesOut> {
+	struct Sampler {
+		ts_ms: i64,
+		/// Per-tick step counter: step order is identical every tick, so it doubles as node id.
+		idx: usize,
+		nodes: Vec<SeriesOut>,
+	}
+	impl Observer for Sampler {
+		fn on(&mut self, node: &'static str, deps: &'static [&'static str], fire: Fire<'_>) {
+			if self.nodes.len() <= self.idx {
+				assert_eq!(self.nodes.len(), self.idx, "step order shifted between ticks");
+				self.nodes.push(SeriesOut {
+					node: trim(node),
+					deps: deps.iter().map(|d| trim(d)).collect(),
+					dims: fire.dims.to_vec(),
+					sketch: fire.sketch.into(),
+					points: Vec::new(),
+				});
+			}
+			let s = &mut self.nodes[self.idx];
+			self.idx += 1;
+			if let Some(vals) = fire.vals {
+				let bucket = self.ts_ms - self.ts_ms.rem_euclid(60_000);
+				match s.points.last_mut() {
+					Some(p) if p.ts_ms == bucket => p.vals = vals.to_vec(),
+					_ => s.points.push(PointOut { ts_ms: bucket, vals: vals.to_vec() }),
+				}
+			}
+		}
+	}
+
+	let mut sampler = Sampler {
+		ts_ms: 0,
+		idx: 0,
+		nodes: Vec::new(),
+	};
+	let mut graph = G::default();
+	for ev in events {
+		sampler.ts_ms = ev.ts_ns() / 1_000_000;
+		sampler.idx = 0;
+		graph.tick_obs(Some(*ev), &mut sampler);
+	}
+	sampler.nodes
 }
 pub struct ReplaySession<G: Dag> {
 	events: Vec<G::Event>,
@@ -118,10 +187,11 @@ fn trim(name: &str) -> String {
 }
 
 #[derive(Default)]
-struct Collect(Vec<Activation>);
+struct Collect(Vec<Activation>, Vec<&'static Sketch>);
 
 impl Observer for Collect {
 	fn on(&mut self, node: &'static str, deps: &'static [&'static str], fire: Fire<'_>) {
+		self.1.push(fire.sketch);
 		self.0.push(Activation {
 			node: trim(node),
 			deps: deps.iter().map(|d| trim(d)).collect(),

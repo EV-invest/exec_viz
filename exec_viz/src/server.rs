@@ -11,13 +11,12 @@ use axum::{
 	response::{Html, IntoResponse},
 	routing::{get, post},
 };
-use serde::Serialize;
 use tokio::sync::Mutex;
 use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
 use trading_data_dag::Dag;
 
 use crate::{
-	api_types::{ActivationFrame, BarOut, SeekReq, StepReq, StepUntilChangeReq, StepUntilReq, TopoNode},
+	api_types::{ActivationFrame, DayOut, SeekReq, StepReq, StepUntilChangeReq, StepUntilReq, TopoNode},
 	config::AppConfig,
 	session::{ReplaySession, topology},
 };
@@ -26,12 +25,12 @@ use crate::{
 /// from here — the rest of the front-end is the `dx build` output.
 const ASSETS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets");
 
-pub async fn serve<G>(cfg: AppConfig, events: Vec<G::Event>, bars: Vec<BarOut>)
+pub async fn serve<G>(cfg: AppConfig, events: Vec<G::Event>, day: DayOut)
 where
 	G: Dag + Send + 'static,
 	G::Event: Send + Sync + 'static, {
 	assert!(!events.is_empty(), "empty event stream");
-	let day = serde_json::to_string(&DayPayload { bars }).expect("day payload serializes");
+	let day = serde_json::to_string(&day).expect("day payload serializes");
 	tracing::info!(events = events.len(), "replay session ready");
 
 	let state = AppState {
@@ -64,11 +63,6 @@ where
 	println!("http://{addr}/");
 	axum::serve(listener, app).await.expect("axum serve");
 }
-#[derive(Serialize)]
-struct DayPayload {
-	bars: Vec<BarOut>,
-}
-
 /// Root of the built front-end (`dx build` output). Overridable via `EXEC_VIZ_WEB_DIR`; defaults
 /// to the debug `dx` bundle dir so `nix run` (build → serve) works as-is.
 fn web_dir() -> PathBuf {

@@ -12,6 +12,58 @@ pub struct TopoNode {
 	pub node: String,
 	pub deps: Vec<String>,
 	pub dims: Vec<usize>,
+	pub sketch: SketchOut,
+}
+
+/// Serde mirror of `trading_data_dag::Ink`: l/c/a only — hue stays renderer-owned.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+pub struct InkOut {
+	pub l: f64,
+	pub c: f64,
+	pub a: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct GuideOut {
+	pub label: String,
+	pub value: f64,
+	pub ink: InkOut,
+}
+
+/// Serde mirror of `trading_data_dag::Sketch`.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct SketchOut {
+	pub range: Option<(f64, f64)>,
+	pub guides: Vec<GuideOut>,
+	pub labels: Vec<String>,
+	pub inks: Vec<InkOut>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct PointOut {
+	pub ts_ms: i64,
+	pub vals: Vec<f64>,
+}
+
+/// One node's full-day output sampled once per 1m bucket (last fired value wins). `deps` lets
+/// the chart recompute topo depth without a second fetch.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct SeriesOut {
+	pub node: String,
+	pub deps: Vec<String>,
+	pub dims: Vec<usize>,
+	pub sketch: SketchOut,
+	pub points: Vec<PointOut>,
+}
+
+/// The static `/api/day` chart payload — serialized once at boot, opaque to both the server and
+/// the wasm client (the chart shim is the only reader).
+#[derive(Clone, Debug, Serialize)]
+pub struct DayOut {
+	pub bars: Vec<BarOut>,
+	pub series: Vec<SeriesOut>,
+	/// Node whose values back the candles — the chart skips it in the indicator panes.
+	pub price_node: String,
 }
 
 /// One node's output on the current tick. `out` is the compact `Display` (card face); `detail`

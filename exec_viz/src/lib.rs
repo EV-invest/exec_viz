@@ -22,6 +22,7 @@ mod session;
 pub use {
 	config::{AppConfig, SettingsFlags},
 	server::serve,
+	session::day_series,
 };
 
 #[cfg(feature = "web")]

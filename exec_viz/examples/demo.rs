@@ -4,8 +4,12 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use exec_viz::{AppConfig, SettingsFlags, api_types::BarOut};
-use trading_data_demo::nodes::{Graph, Print};
+use exec_viz::{
+	AppConfig, SettingsFlags,
+	api_types::{BarOut, DayOut},
+};
+use trading_data_dag::Dag;
+use trading_data_demo::nodes::Graph;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -30,12 +34,16 @@ async fn main() {
 	// Reuse trading_data's demo cache: idempotent download+ingest on first boot, instant after.
 	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../trading_data/tmp/demo_cache"));
 	let catalog = trading_data_demo::ensure_catalog(&cache);
-	let prints = trading_data_demo::load_prints(&catalog);
-	let bars = day_bars(&prints);
-	exec_viz::serve::<Graph>(cfg, prints, bars).await;
+	let prints: Vec<_> = trading_data_demo::trades(&catalog).collect();
+	let day = DayOut {
+		bars: day_bars(&prints),
+		series: exec_viz::day_series::<Graph>(&prints),
+		price_node: "Bar1m".into(),
+	};
+	exec_viz::serve::<Graph>(cfg, prints, day).await;
 }
 /// One boot-time pass over the day collecting closed `Bar1m` outs → the static chart payload.
-fn day_bars(prints: &[Print]) -> Vec<BarOut> {
+fn day_bars(prints: &[<Graph as Dag>::Event]) -> Vec<BarOut> {
 	let mut graph = Graph::default();
 	let mut bars = Vec::new();
 	for &p in prints {
@@ -52,4 +60,3 @@ fn day_bars(prints: &[Print]) -> Vec<BarOut> {
 	}
 	bars
 }
-
