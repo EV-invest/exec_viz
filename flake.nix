@@ -79,7 +79,6 @@
             cd "$repo"
             dx build --package ${pname} --no-default-features --features web
             export EXEC_VIZ_WEB_DIR="$repo/target/dx/${pname}/debug/web/public"
-            ( sleep 1; xdg-open "http://127.0.0.1:$port/" 2>/dev/null || true ) &
             exec cargo run -p ${pname} --example demo -- --port "$port"
           '';
         };

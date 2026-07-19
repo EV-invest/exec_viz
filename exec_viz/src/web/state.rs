@@ -1,7 +1,7 @@
 //! Data layer + shared state: all `/api/*` calls, the current [`ActivationFrame`], and the
 //! free-run knobs. Every frame that lands also moves the chart's replay cursor.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use dioxus::prelude::*;
 use gloo_net::http::Request;
@@ -16,21 +16,9 @@ pub static SPEED: GlobalSignal<usize> = Signal::global(|| 512);
 pub static ERROR: GlobalSignal<Option<String>> = Signal::global(|| None);
 /// Click-selected DAG nodes — the "skip to next change in any of these" set.
 pub static SELECTED: GlobalSignal<HashSet<String>> = Signal::global(HashSet::new);
-pub static GATES_VISIBLE: GlobalSignal<bool> = Signal::global(|| false);
-/// Gate names — union of the topology's `gates` lists (a gate nobody consumes gates nothing).
-pub static GATES: GlobalSignal<Vec<String>> = Signal::global(Vec::new);
-/// Per-gate (tick, state) transitions of the frames seen this session — free-run lands sparse
-/// frames, so between-poll flips are unseen; a server-side full-day trace endpoint is the
-/// upgrade if that ever matters.
-pub static GATE_HIST: GlobalSignal<HashMap<String, Vec<(usize, bool)>>> = Signal::global(HashMap::new);
 
 pub async fn fetch_topology() -> Result<Vec<TopoNode>, String> {
-	let topo: Vec<TopoNode> = get_json("/api/topology").await?;
-	let mut gates: Vec<String> = topo.iter().flat_map(|n| n.gates.iter().cloned()).collect();
-	gates.sort();
-	gates.dedup();
-	*GATES.write() = gates;
-	Ok(topo)
+	get_json("/api/topology").await
 }
 
 /// Raw `/api/day` body — never parsed by Rust, handed straight to the chart shim.
@@ -77,11 +65,6 @@ pub fn toggle_play() {
 	*PLAYING.write() = !v;
 }
 
-pub fn toggle_gates() {
-	let v = *GATES_VISIBLE.peek();
-	*GATES_VISIBLE.write() = !v;
-}
-
 pub fn speed_up() {
 	let v = *SPEED.peek();
 	*SPEED.write() = (v * 2).min(1 << 16);
@@ -96,7 +79,6 @@ fn apply(res: Result<ActivationFrame, String>) {
 	match res {
 		Ok(f) => {
 			set_cursor(f.ts_ns);
-			record_gates(&f);
 			if f.tick >= f.total {
 				*PLAYING.write() = false;
 			}
@@ -105,26 +87,6 @@ fn apply(res: Result<ActivationFrame, String>) {
 		Err(e) => {
 			*PLAYING.write() = false;
 			*ERROR.write() = Some(e);
-		}
-	}
-}
-
-fn record_gates(f: &ActivationFrame) {
-	let gates = GATES.peek();
-	if gates.is_empty() {
-		return;
-	}
-	let mut hist = GATE_HIST.write();
-	for g in gates.iter() {
-		let v = hist.entry(g.clone()).or_default();
-		// backward seek: rewind history past the landed tick
-		while v.last().is_some_and(|&(t, _)| t >= f.tick) {
-			v.pop();
-		}
-		let Some(a) = f.activations.iter().find(|a| a.node == *g) else { continue };
-		let open = a.vals.as_ref().is_some_and(|vs| vs[0] != 0.0);
-		if v.last().map(|&(_, b)| b) != Some(open) {
-			v.push((f.tick, open));
 		}
 	}
 }

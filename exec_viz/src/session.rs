@@ -51,12 +51,13 @@ pub fn day_series<G: Dag>(events: &[G::Event]) -> Vec<SeriesOut> {
 		nodes: Vec<SeriesOut>,
 	}
 	impl Observer for Sampler {
-		fn on(&mut self, node: &'static str, deps: &'static [&'static str], _: &'static [&'static str], fire: Fire<'_>) {
+		fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [&'static str], fire: Fire<'_>) {
 			if self.nodes.len() <= self.idx {
 				assert_eq!(self.nodes.len(), self.idx, "step order shifted between ticks");
 				self.nodes.push(SeriesOut {
 					node: trim(node),
 					deps: deps.iter().map(|d| trim(d)).collect(),
+					gates: gates.iter().map(|g| trim(g)).collect(),
 					dims: fire.dims.to_vec(),
 					sketch: fire.sketch.into(),
 					points: Vec::new(),

@@ -20,9 +20,14 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	let mut hover = use_signal(|| Hover::None);
 	let mut ranges = use_signal(HashMap::<String, Vec<(f64, f64)>>::new);
 	let mut edges = use_signal(Vec::<Edge>::new);
-	let mut ctrl = use_signal(Vec::<CtrlEdge>::new);
 
-	let gate_set: std::collections::HashSet<String> = topology.iter().flat_map(|n| n.gates.iter().cloned()).collect();
+	// glyph ids (`dagcard-{gate}`/`dagel-{gate}-·`) assume a single owner per gate
+	let mut gate_set = std::collections::HashSet::new();
+	for n in &topology {
+		for g in &n.gates {
+			assert!(gate_set.insert(g.clone()), "gate {g} gated by multiple nodes");
+		}
+	}
 
 	// `level(node) = 1 + max(level(deps))`, roots 0 — one pass works because the server sends
 	// nodes in step (= topo) order.
@@ -31,6 +36,9 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	for n in &topology {
 		let l = n.deps.iter().map(|d| level.get(d).expect("topo order: dep precedes node") + 1).max().unwrap_or(0);
 		level.insert(n.node.clone(), l);
+		if gate_set.contains(&n.node) {
+			continue; // gates render as switch glyphs docked on the gated card, not peer cards
+		}
 		if cols.len() <= l {
 			cols.resize_with(l + 1, Vec::new);
 		}
@@ -53,13 +61,11 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 			}
 		}
 		let dep_lens: HashMap<String, usize> = topo.iter().map(|n| (n.node.clone(), n.dims.iter().product())).collect();
-		let pairs: Vec<(String, String)> = topo.iter().flat_map(|n| n.gates.iter().map(|g| (g.clone(), n.node.clone()))).collect();
 		let acts = frame.activations.clone();
 		spawn(async move {
 			// measure one timer tick after the DOM patch so fresh cell rects are non-zero
 			gloo_timers::future::TimeoutFuture::new(0).await;
 			edges.set(measure_edges(&acts, &dep_lens));
-			ctrl.set(measure_ctrl(&pairs));
 		});
 	});
 
@@ -82,11 +88,10 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 							let dep_hl = hovered_deps.contains(&n.node);
 							let selected = state::SELECTED().contains(&n.node);
 							let class = format!(
-								"dag-card{}{}{}{}",
+								"dag-card{}{}{}",
 								if fired { " lit" } else { "" },
 								if dep_hl { " dep" } else { "" },
 								if selected { " sel" } else { "" },
-								if gate_set.contains(&n.node) { " gate" } else { "" },
 							);
 							let name = n.node.clone();
 							let clicked = n.node.clone();
@@ -104,6 +109,66 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 									onmouseenter: move |_| hover.set(Hover::Card(name.clone())),
 									onmouseleave: move |_| hover.set(Hover::None),
 									onclick: move |_| state::toggle_select(&clicked),
+									// transmission-gate glyph: `input ─[ switch ]→ block`, docked on the input wire
+									for g in n.gates.clone() {
+										{
+											let gt = topology.iter().find(|t| t.node == g).expect("gate listed in topology");
+											assert_eq!(gt.dims.iter().product::<usize>(), 1, "gate glyph assumes a scalar gate");
+											let (gfired, _, gdetail, gvals) = acts.get(&g).cloned().unwrap_or((false, String::new(), String::new(), None));
+											let open = gvals.as_ref().is_some_and(|v| v[0] != 0.0);
+											let gclass = format!(
+												"dag-gate{}{}",
+												if gfired { " lit" } else { "" },
+												if state::SELECTED().contains(&g) { " sel" } else { "" },
+											);
+											let (txt, gheat) = match gvals.as_ref().map(|v| v[0]) {
+												Some(v) => (fmt_val(v), heat(ranges_r.get(&g).and_then(|r| r.first()), v)),
+												None => (String::new(), 0.0),
+											};
+											let cell_class = if gvals.is_some() { "dag-cell" } else { "dag-cell dim" };
+											let enter = g.clone();
+											let leave = n.node.clone();
+											let clicked = g.clone();
+											let cell_enter = g.clone();
+											let cell_leave = g.clone();
+											rsx! {
+												div {
+													key: "{g}",
+													id: "dagcard-{g}",
+													class: "{gclass}",
+													onmouseenter: move |_| hover.set(Hover::Card(enter.clone())),
+													onmouseleave: move |_| hover.set(Hover::Card(leave.clone())),
+													onclick: move |e| {
+														e.stop_propagation();
+														state::toggle_select(&clicked);
+													},
+													svg { class: "dag-gate-sw", view_box: "0 0 24 10",
+														line { x1: "0", y1: "5", x2: "7", y2: "5", stroke: "currentColor", stroke_width: "1.2" }
+														line { x1: "17", y1: "5", x2: "24", y2: "5", stroke: "currentColor", stroke_width: "1.2" }
+														circle { cx: "7", cy: "5", r: "1.4", fill: "currentColor" }
+														if open {
+															line { x1: "7", y1: "5", x2: "17", y2: "5", stroke: "#26a69a", stroke_width: "1.4" }
+														} else {
+															line { x1: "7", y1: "5", x2: "16", y2: "1", stroke: "#ef5350", stroke_width: "1.4" }
+														}
+													}
+													span { class: "dag-gate-pwr", "⏻" }
+													span { class: "dag-gate-name", "{g}" }
+													div {
+														id: "dagel-{g}-0",
+														class: "{cell_class}",
+														style: "background: rgba(38, 166, 154, {gheat});",
+														onmouseenter: move |_| hover.set(Hover::Cell(cell_enter.clone(), 0)),
+														onmouseleave: move |_| hover.set(Hover::Card(cell_leave.clone())),
+														"{txt}"
+													}
+													if !gdetail.is_empty() && hovered_node.as_deref() == Some(g.as_str()) {
+														div { class: "dag-tip", "{gdetail}" }
+													}
+												}
+											}
+										}
+									}
 									div { class: "dag-name", "{node}" }
 									div { class: "dag-out", "{out}" }
 									div {
@@ -143,7 +208,6 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 			svg { class: "dag-edges",
 				{
 					let h = hover();
-					let hc = h.clone();
 					rsx! {
 						for e in edges.read().iter().filter(move |e| match &h {
 							Hover::None => true,
@@ -159,23 +223,6 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 								stroke: if e.w > 0.0 { "#26a69a" } else { "#ef5350" },
 								stroke_width: "{1.0 + 2.0 * e.mag}",
 								opacity: "{0.15 + 0.85 * e.mag}",
-							}
-						}
-						// control edges (gate ⇢ gated node): card-level, dashed — not data flow
-						for e in ctrl.read().iter().filter(move |e| match &hc {
-							Hover::None => true,
-							Hover::Card(n) | Hover::Cell(n, _) => e.from == *n || e.to == *n,
-						}) {
-							line {
-								key: "ctrl-{e.from}-{e.to}",
-								x1: "{e.x1}",
-								y1: "{e.y1}",
-								x2: "{e.x2}",
-								y2: "{e.y2}",
-								stroke: "#e0b040",
-								stroke_dasharray: "4 3",
-								stroke_width: "1.2",
-								opacity: "0.6",
 							}
 						}
 					}
@@ -270,42 +317,6 @@ fn measure_edges(acts: &[Activation], dep_lens: &HashMap<String, usize>) -> Vec<
 		}
 	}
 	out
-}
-
-/// A control edge (gate ⇢ gated node) at card granularity, same pixel space as [`Edge`].
-#[derive(Clone, PartialEq)]
-struct CtrlEdge {
-	from: String,
-	to: String,
-	x1: f64,
-	y1: f64,
-	x2: f64,
-	y2: f64,
-}
-
-fn measure_ctrl(pairs: &[(String, String)]) -> Vec<CtrlEdge> {
-	let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
-		return Vec::new();
-	};
-	let Some(root) = doc.get_element_by_id(DAG_ID) else {
-		return Vec::new();
-	};
-	let root_rect = root.get_bounding_client_rect();
-	pairs
-		.iter()
-		.filter_map(|(g, n)| {
-			let fr = doc.get_element_by_id(&format!("dagcard-{g}"))?.get_bounding_client_rect();
-			let tr = doc.get_element_by_id(&format!("dagcard-{n}"))?.get_bounding_client_rect();
-			(fr.width() != 0.0 && tr.width() != 0.0).then(|| CtrlEdge {
-				from: g.clone(),
-				to: n.clone(),
-				x1: fr.right() - root_rect.left(),
-				y1: fr.top() + fr.height() / 2.0 - root_rect.top(),
-				x2: tr.left() - root_rect.left(),
-				y2: tr.top() + tr.height() / 2.0 - root_rect.top(),
-			})
-		})
-		.collect()
 }
 
 fn heat(range: Option<&(f64, f64)>, v: f64) -> f64 {

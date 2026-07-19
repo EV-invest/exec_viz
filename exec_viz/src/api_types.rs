@@ -48,11 +48,13 @@ pub struct PointOut {
 }
 
 /// One node's full-day output sampled once per 1m bucket (last fired value wins). `deps` lets
-/// the chart recompute topo depth without a second fetch.
+/// the chart recompute topo depth without a second fetch; `gates` routes gate nodes to the
+/// chart's dedicated gates pane.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct SeriesOut {
 	pub node: String,
 	pub deps: Vec<String>,
+	pub gates: Vec<String>,
 	pub dims: Vec<usize>,
 	pub sketch: SketchOut,
 	pub points: Vec<PointOut>,

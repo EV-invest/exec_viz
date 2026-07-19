@@ -1,7 +1,7 @@
 // exec_viz chart logic — the app-specific half of the lightweight-charts shim. The shared v_utils
 // core (`lwc_core.js`) owns the chart instance and calls `draw(chart, data, viewSpec)`; this module
 // is "what we chart": the day's 1m candles + volume, one indicator pane per DAG layer (topo depth,
-// recomputed here from each series' deps), plus a replay-cursor vertical line the wasm side moves
+// recomputed here from each series' deps), a small gates pane, plus a replay-cursor vertical line the wasm side moves
 // via `window.__execVizSetCursor(tsSec)` as the replay advances.
 //
 // Hue is renderer-owned: drawable elements are enumerated in topo order (a vector node takes LEN
@@ -10,7 +10,7 @@
 // data     = the parsed /api/day payload ({ bars, series: [SeriesOut], price_node }).
 // viewSpec = { theme }.
 
-import { ColorType, CrosshairMode, LineStyle, CandlestickSeries, HistogramSeries, LineSeries, createTextWatermark } from "lightweight-charts";
+import { ColorType, CrosshairMode, LineStyle, LineType, CandlestickSeries, HistogramSeries, LineSeries, createTextWatermark } from "lightweight-charts";
 
 const GRID = "#1e2130";
 const CANDLE = "rgba(255,255,255,0.5)";
@@ -75,8 +75,17 @@ function attachTooltip(div, chart, tip, state) {
     }
     tt.replaceChildren(...lines.map((l) => {
       const d = document.createElement("div");
-      d.textContent = l.text;
-      if (l.color) d.style.color = l.color;
+      if (Array.isArray(l.text)) {
+        for (const seg of l.text) {
+          const s = document.createElement("span");
+          s.textContent = seg.text;
+          if (seg.color) s.style.color = seg.color;
+          d.appendChild(s);
+        }
+      } else {
+        d.textContent = l.text;
+        if (l.color) d.style.color = l.color;
+      }
       if (param.paneIndex != null && l.pane !== param.paneIndex) d.style.opacity = "0.35";
       return d;
     }));
@@ -139,7 +148,8 @@ function teardown(chart) {
 }
 
 // One pane per DAG layer below price+volume; all of a layer's nodes drawn together, each on its
-// own price scale (layers mix units — RSI 0–100 next to λ ~1e-6).
+// own price scale (layers mix units — RSI 0–100 next to λ ~1e-6). Gate nodes get one dedicated
+// pane at the bottom instead: 0/1 square waves on the shared time axis.
 function addIndicatorPanes(chart, data, st) {
   const series = data.series ?? [];
   const depth = new Map();
@@ -147,6 +157,9 @@ function addIndicatorPanes(chart, data, st) {
   const len = (s) => s.dims.reduce((a, b) => a * b, 1);
   // roots (depth 0) and the candle source are the price chart itself, not indicators.
   const drawable = series.filter((s) => depth.get(s.node) >= 1 && s.node !== data.price_node);
+  // a gate nobody consumes gates nothing (same rule as the DAG panel)
+  const gateSet = new Set(series.flatMap((s) => s.gates));
+  const gates = drawable.filter((s) => gateSet.has(s.node));
 
   let slots = 0;
   const slot0 = new Map();
@@ -154,9 +167,10 @@ function addIndicatorPanes(chart, data, st) {
   const hue = (s, i) => (360 * (slot0.get(s.node) + i)) / Math.max(slots, 1);
   const ink = (s, i) => s.sketch.inks[i] ?? MAIN_INK;
 
-  for (const d of [...new Set(drawable.map((s) => depth.get(s.node)))].sort((a, b) => a - b)) {
+  const indicators = drawable.filter((s) => !gateSet.has(s.node));
+  for (const d of [...new Set(indicators.map((s) => depth.get(s.node)))].sort((a, b) => a - b)) {
     const pane = chart.panes().length;
-    const nodes = drawable.filter((s) => depth.get(s.node) === d);
+    const nodes = indicators.filter((s) => depth.get(s.node) === d);
     for (const s of nodes) {
       const n = len(s);
       const opts = { priceScaleId: `ind-${s.node}`, lastValueVisible: false, priceLineVisible: false };
@@ -166,8 +180,11 @@ function addIndicatorPanes(chart, data, st) {
       }
       const label = (k) => s.sketch.labels[k] ?? (n > 1 ? `[${k}]` : "");
       tipFrom(st.tip, s.points, (p) => p.ts_ms / 1000,
-        (p) => `${s.node} ${Array.from({ length: n }, (_, k) => `${label(k)} ${fmt(p.vals[k])}`).join("  ").trim()}`,
-        pane, oklch(ink(s, 0), hue(s, 0)));
+        (p) => [
+          { text: s.node, color: oklch(ink(s, 0), hue(s, 0)) },
+          ...Array.from({ length: n }, (_, k) => ({ text: `  ${label(k) ? label(k) + " " : ""}${fmt(p.vals[k])}`, color: oklch(ink(s, k), hue(s, k)) })),
+        ],
+        pane, null);
       let guideHost = null;
       if (n > 1) {
         // stacked histogram: per-point cumulative segments, largest drawn first so each later
@@ -202,6 +219,28 @@ function addIndicatorPanes(chart, data, st) {
     const text = nodes.map((s) => (s.sketch.labels.length ? `${s.node} (${s.sketch.labels.join(" · ")})` : s.node)).join("   ");
     createTextWatermark(chart.panes()[pane], { horzAlign: "left", vertAlign: "top", lines: [{ text, color: "rgba(150,160,180,0.55)", fontSize: 10 }] });
   }
+
+  if (gates.length) {
+    const pane = chart.panes().length;
+    st.gatePane = pane;
+    for (const s of gates) {
+      const color = oklch(ink(s, 0), hue(s, 0));
+      const line = chart.addSeries(LineSeries, {
+        priceScaleId: `ind-${s.node}`,
+        lastValueVisible: false,
+        priceLineVisible: false,
+        color,
+        lineWidth: 1,
+        lineType: LineType.WithSteps,
+        // fixed 0/1 frame with margin so the square wave never rescales
+        autoscaleInfoProvider: () => ({ priceRange: { minValue: -0.25, maxValue: 1.25 } }),
+      }, pane);
+      line.setData(s.points.filter((p) => Number.isFinite(p.vals[0])).map((p) => ({ time: p.ts_ms / 1000, value: p.vals[0] })));
+      st.series.push(line);
+      tipFrom(st.tip, s.points, (p) => p.ts_ms / 1000, (p) => `${s.node} ${p.vals[0] !== 0 ? "open" : "closed"}`, pane, color);
+    }
+    createTextWatermark(chart.panes()[pane], { horzAlign: "left", vertAlign: "top", lines: [{ text: gates.map((s) => `⏻ ${s.node}`).join("   "), color: "rgba(150,160,180,0.55)", fontSize: 10 }] });
+  }
 }
 
 export function draw(chart, data, viewSpec) {
@@ -231,7 +270,7 @@ export function draw(chart, data, viewSpec) {
   addIndicatorPanes(chart, data, st);
   attachTooltip(chart.chartElement(), chart, st.tip, st);
 
-  chart.panes().forEach((p, i) => p.setStretchFactor(i === 0 ? 3 : 1));
+  chart.panes().forEach((p, i) => p.setStretchFactor(i === 0 ? 3 : i === st.gatePane ? 0.5 : 1));
 
   const cursor = new CursorPrimitive();
   candle.attachPrimitive(cursor);
