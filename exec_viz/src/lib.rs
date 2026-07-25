@@ -1,29 +1,27 @@
-#![feature(default_field_values)]
-//! DAG-activations replay for any [`trading_data_dag::Dag`]: one computation structure, multiple
+//! DAG-activations replay for any `trading_data` graph: one computation structure, multiple
 //! interpretations. Prod evals via `step`; here the same tick chain runs under a recording
-//! [`trading_data_dag::Observer`], and the browser replays an event stream tick-by-tick — layers
-//! lighting up, values flowing — next to a candle chart.
+//! [`trading_data_dag::Observer`], and the browser replays it tick-by-tick — layers lighting up,
+//! values flowing — next to a candle chart.
 //!
-//! No trace persistence: **determinism is the storage**. The server holds a replay session
-//! (events + graph + cursor) and recomputes activation frames on demand; backward seek is a
-//! fresh graph re-run from 0 (~1s for a full day).
+//! A library, not a runner. The app owns the graph, the feed and the runtime; it attaches a
+//! [`Viz`], hands it to its own `tick_obs`, and awaits [`Viz::serve`] wherever it likes:
+//!
+//! ```ignore
+//! let mut viz = Viz::new(Some("Bar1m"), 100_000, 60_000);
+//! let out = graph.tick_obs(batches, viz.at(ts_ns));
+//! viz.clone().serve(59994).await;
+//! ```
 
 pub mod api_types;
 
-#[cfg(feature = "server")]
-mod config;
 #[cfg(feature = "server")]
 pub mod record;
 #[cfg(feature = "server")]
 mod server;
 #[cfg(feature = "server")]
-mod session;
+mod tape;
 #[cfg(feature = "server")]
-pub use {
-	config::{AppConfig, SettingsFlags},
-	server::serve,
-	session::day_series,
-};
+pub use tape::Viz;
 
 #[cfg(feature = "web")]
 mod web;

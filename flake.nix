@@ -65,21 +65,25 @@
               hash = "sha256-aZCfgR23Qb0Pn4Mm4ToMtuuRQqSJjXCR9li/VvP5CTM=";
             };
           };
-        # The app's single port (what you open), overridable via the PORT env.
-        vizPort = 59994;
-        # `nix run` → build the wasm bundle, then the axum server serves it + /api + /lwc_draw.js
-        # on one port. Run from the repo root: dx 0.7 canonicalizes the workspace
+        # `nix run . -- <demo|live>` → build the wasm bundle here, then run the sibling
+        # trading_data example that attaches the viz; it serves the bundle + /api + /lwc_draw.js
+        # on one port. The toolchain is pinned here, so the runner lives here even though the apps
+        # don't. `dx build` runs from this repo root: dx 0.7 canonicalizes the workspace
         # `default-members` relative to CWD.
         runViz = pkgs.writeShellApplication {
           name = "run-exec-viz";
           runtimeInputs = (with pkgs; [ rust dioxus-cli git pkg-config openssl cmake clang mold gcc ]) ++ [ wasm-bindgen-cli ];
           text = ''
-            port="''${PORT:-${toString vizPort}}"
+            case "''${1:-demo}" in
+              demo) pkg=trading_data_demo ;;
+              live) pkg=trading_data_live_example ;;
+              *) echo "usage: nix run . -- <demo|live>" >&2; exit 1 ;;
+            esac
             repo="$(git rev-parse --show-toplevel)"
             cd "$repo"
             dx build --package ${pname} --no-default-features --features web
             export EXEC_VIZ_WEB_DIR="$repo/target/dx/${pname}/debug/web/public"
-            exec cargo run -p ${pname} --example demo -- --port "$port"
+            exec cargo run --manifest-path "$repo/../trading_data/Cargo.toml" -p "$pkg"
           '';
         };
       in
@@ -130,8 +134,8 @@
               rust
               dioxus-cli
               wasm-bindgen-cli
-              # Build the wasm bundle then serve it + /api on one port — same as `nix run`.
-              (writeShellScriptBin "viz" "exec ${runViz}/bin/run-exec-viz")
+              # `viz demo` / `viz live` — same as `nix run . -- <example>`.
+              (writeShellScriptBin "viz" ''exec ${runViz}/bin/run-exec-viz "$@"'')
             ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
 
             env.RUST_BACKTRACE = 1;

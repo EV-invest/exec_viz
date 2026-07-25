@@ -61,14 +61,15 @@ pub struct SeriesOut {
 	pub points: Vec<PointOut>,
 }
 
-/// The static `/api/day` chart payload — serialized once at boot, opaque to both the server and
-/// the wasm client (the chart shim is the only reader).
+/// The `/api/day` chart payload, opaque to both the server and the wasm client (the chart shim is
+/// the only reader). Snapshotted per request — under a live feed it keeps growing.
 #[derive(Clone, Debug, Serialize)]
 pub struct DayOut {
 	pub bars: Vec<BarOut>,
 	pub series: Vec<SeriesOut>,
-	/// Node whose values back the candles — the chart skips it in the indicator panes.
-	pub price_node: String,
+	/// Node whose values back the candles — the chart skips it in the indicator panes. `None`
+	/// when the graph has no price node, and then nothing is skipped.
+	pub price_node: Option<String>,
 }
 
 /// One node's output on the current tick. `out` is the compact `Display` (card face); `detail`
