@@ -159,7 +159,7 @@ function addIndicatorPanes(chart, data, st) {
   const drawable = series.filter((s) => depth.get(s.node) >= 1 && s.node !== data.price_node);
   // a gate nobody consumes gates nothing (same rule as the DAG panel)
   const gateSet = new Set(series.flatMap((s) => s.gates));
-  const gates = drawable.filter((s) => gateSet.has(s.node));
+  const gates = drawable.filter((s) => gateSet.has(s.node) && !s.sketch.overlay);
 
   let slots = 0;
   const slot0 = new Map();
@@ -167,7 +167,8 @@ function addIndicatorPanes(chart, data, st) {
   const hue = (s, i) => (360 * (slot0.get(s.node) + i)) / Math.max(slots, 1);
   const ink = (s, i) => s.sketch.inks[i] ?? MAIN_INK;
 
-  const indicators = drawable.filter((s) => !gateSet.has(s.node));
+  const overlays = drawable.filter((s) => s.sketch.overlay);
+  const indicators = drawable.filter((s) => !gateSet.has(s.node) && !s.sketch.overlay);
   for (const d of [...new Set(indicators.map((s) => depth.get(s.node)))].sort((a, b) => a - b)) {
     const pane = chart.panes().length;
     const nodes = indicators.filter((s) => depth.get(s.node) === d);
@@ -218,6 +219,28 @@ function addIndicatorPanes(chart, data, st) {
     }
     const text = nodes.map((s) => (s.sketch.labels.length ? `${s.node} (${s.sketch.labels.join(" · ")})` : s.node)).join("   ");
     createTextWatermark(chart.panes()[pane], { horzAlign: "left", vertAlign: "top", lines: [{ text, color: "rgba(150,160,180,0.55)", fontSize: 10 }] });
+  }
+
+  // price-denominated series drawn on the candle pane (pane 0), on the shared price scale.
+  for (const s of overlays) {
+    const n = len(s);
+    const label = (k) => s.sketch.labels[k] ?? (n > 1 ? `[${k}]` : "");
+    tipFrom(st.tip, s.points, (p) => p.ts_ms / 1000,
+      (p) => [
+        { text: s.node, color: oklch(ink(s, 0), hue(s, 0)) },
+        ...Array.from({ length: n }, (_, k) => ({ text: `  ${label(k) ? label(k) + " " : ""}${fmt(p.vals[k])}`, color: oklch(ink(s, k), hue(s, k)) })),
+      ],
+      0, null);
+    let guideHost = null;
+    for (let k = 0; k < n; k++) {
+      const line = chart.addSeries(LineSeries, { priceScaleId: "right", lastValueVisible: false, priceLineVisible: false, color: oklch(ink(s, k), hue(s, k)), lineWidth: 1 }, 0);
+      line.setData(s.points.filter((p) => Number.isFinite(p.vals[k])).map((p) => ({ time: p.ts_ms / 1000, value: p.vals[k] })));
+      st.series.push(line);
+      guideHost = line;
+    }
+    for (const g of s.sketch.guides) {
+      guideHost.createPriceLine({ price: g.value, color: oklch(g.ink, hue(s, 0)), lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: false, title: g.label });
+    }
   }
 
   if (gates.length) {

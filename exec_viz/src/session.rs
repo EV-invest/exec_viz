@@ -21,6 +21,7 @@ impl From<&Sketch> for SketchOut {
 				.collect(),
 			labels: s.labels.iter().map(|l| l.to_string()).collect(),
 			inks: s.inks.iter().map(ink).collect(),
+			overlay: s.overlay,
 		}
 	}
 }

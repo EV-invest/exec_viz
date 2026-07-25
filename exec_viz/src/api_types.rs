@@ -39,6 +39,7 @@ pub struct SketchOut {
 	pub guides: Vec<GuideOut>,
 	pub labels: Vec<String>,
 	pub inks: Vec<InkOut>,
+	pub overlay: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

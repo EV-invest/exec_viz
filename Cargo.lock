@@ -3761,6 +3761,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
+name = "rand_distr"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d431c2703ccf129de4d45253c03f49ebb22b97d6ad79ee3ecfc7e3f4862c1d8"
+dependencies = [
+ "num-traits",
+ "rand 0.10.2",
+]
+
+[[package]]
 name = "rand_pcg"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4892,8 +4902,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "trading_data_core"
+version = "0.3.0"
+dependencies = [
+ "jiff",
+ "v_utils",
+]
+
+[[package]]
 name = "trading_data_dag"
 version = "0.3.0"
+dependencies = [
+ "trading_data_macros",
+]
 
 [[package]]
 name = "trading_data_demo"
@@ -4903,6 +4924,7 @@ dependencies = [
  "jiff",
  "serde_json",
  "trading_data",
+ "trading_data_dag",
  "ureq",
  "v_utils",
 ]
@@ -4910,6 +4932,15 @@ dependencies = [
 [[package]]
 name = "trading_data_derivatives"
 version = "0.3.0"
+
+[[package]]
+name = "trading_data_macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "trading_data_persistence"
@@ -4920,6 +4951,7 @@ dependencies = [
  "parquet",
  "thiserror 2.0.18",
  "tracing",
+ "trading_data_core",
  "trading_data_dag",
  "v_utils",
 ]
@@ -5160,6 +5192,8 @@ dependencies = [
  "libc",
  "macro-attr",
  "miette",
+ "rand 0.10.2",
+ "rand_distr",
  "schemars",
  "serde",
  "serde_json",
