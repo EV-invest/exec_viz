@@ -4,10 +4,9 @@
 use std::collections::HashSet;
 
 use dioxus::prelude::*;
+use exec_viz::api_types::{ActivationFrame, SeekReq, StepReq, StepUntilChangeReq, StepUntilReq, TopoNode};
 use gloo_net::http::Request;
 use wasm_bindgen::{JsCast as _, JsValue};
-
-use crate::api_types::{ActivationFrame, SeekReq, StepReq, StepUntilChangeReq, StepUntilReq, TopoNode};
 
 pub static FRAME: GlobalSignal<Option<ActivationFrame>> = Signal::global(|| None);
 pub static PLAYING: GlobalSignal<bool> = Signal::global(|| false);

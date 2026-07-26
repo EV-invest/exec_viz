@@ -65,32 +65,27 @@
               hash = "sha256-aZCfgR23Qb0Pn4Mm4ToMtuuRQqSJjXCR9li/VvP5CTM=";
             };
           };
-        # `nix run . -- <demo|live>` → build the wasm bundle here, then run the sibling
-        # trading_data example that attaches the viz; it serves the bundle + /api + /lwc_draw.js
-        # on one port. The toolchain is pinned here, so the runner lives here even though the apps
-        # don't. `dx build` runs from this repo root: dx 0.7 canonicalizes the workspace
-        # `default-members` relative to CWD.
-        runViz = pkgs.writeShellApplication {
-          name = "run-exec-viz";
+        # `nix run .` → build the wasm bundle and print where it landed, and nothing else. Whoever
+        # wants a UI points `EXEC_VIZ_WEB_DIR` at that and starts their own binary; this repo has no
+        # business knowing their package names. Only the toolchain is pinned here, which is why the
+        # builder lives here at all. `dx build` runs from the repo root: dx 0.7 canonicalizes the
+        # workspace `default-members` relative to CWD. Path deps reach two sibling checkouts, so
+        # this reads the working tree rather than a store copy — impure by necessity.
+        buildWeb = pkgs.writeShellApplication {
+          name = "exec-viz-build-web";
           runtimeInputs = (with pkgs; [ rust dioxus-cli git pkg-config openssl cmake clang mold gcc ]) ++ [ wasm-bindgen-cli ];
           text = ''
-            case "''${1:-demo}" in
-              demo) pkg=trading_data_demo ;;
-              live) pkg=trading_data_live_example ;;
-              *) echo "usage: nix run . -- <demo|live>" >&2; exit 1 ;;
-            esac
             repo="$(git rev-parse --show-toplevel)"
             cd "$repo"
-            dx build --package ${pname} --no-default-features --features web
-            export EXEC_VIZ_WEB_DIR="$repo/target/dx/${pname}/debug/web/public"
-            exec cargo run --manifest-path "$repo/../trading_data/Cargo.toml" -p "$pkg"
+            dx build --package ${pname}_web >&2
+            echo "$repo/target/dx/${pname}_web/debug/web/public"
           '';
         };
       in
       {
         apps.default = {
           type = "app";
-          program = "${runViz}/bin/run-exec-viz";
+          program = "${buildWeb}/bin/exec-viz-build-web";
         };
 
         packages =
@@ -134,8 +129,6 @@
               rust
               dioxus-cli
               wasm-bindgen-cli
-              # `viz demo` / `viz live` — same as `nix run . -- <example>`.
-              (writeShellScriptBin "viz" ''exec ${runViz}/bin/run-exec-viz "$@"'')
             ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
 
             env.RUST_BACKTRACE = 1;

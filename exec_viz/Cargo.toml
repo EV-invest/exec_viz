@@ -3,55 +3,18 @@ name = "exec_viz"
 version = "0.1.0"
 edition = "2024"
 
-# The `exec_viz` bin is the Dioxus wasm front-end (dx builds it with `--no-default-features
-# --features web`). The server half is library-only — apps attach a `Viz` to their own graph and
-# await `Viz::serve` on their own runtime; see `trading_data`'s examples.
-[lib]
-crate-type = ["cdylib", "rlib"]
-
-[[bin]]
-name = "exec_viz"
-path = "src/main.rs"
-required-features = ["web"]
-
 [features]
 default = ["server"]
-# The recording `Viz` observer + the axum server over it. Native only.
+# The recording `Viz` observer + the axum server over it. Native only; with it off the crate is
+# just `api_types`, which is all the wasm front-end (`exec_viz_web`) needs.
 server = ["dep:axum", "dep:tokio", "dep:tower-http", "dep:trading_data_dag"]
-# The Dioxus WASM front-end (the `[lib]`, built with `--target wasm32`). Never compiles the server paths.
-web = [
-    "dep:dioxus",
-    "dep:futures",
-    "dep:getrandom",
-    "dep:gloo-net",
-    "dep:gloo-timers",
-    "dep:js-sys",
-    "dep:wasm-bindgen-futures",
-    "dep:web-sys",
-    "v_utils/lightweight_charts",
-    "v_utils/wasm",
-]
 
 [dependencies]
 axum = { workspace = true, optional = true }
-dioxus = { workspace = true, optional = true }
-futures = { workspace = true, optional = true }
-getrandom = { workspace = true, optional = true }
-gloo-net = { workspace = true, optional = true }
-gloo-timers = { workspace = true, optional = true }
-js-sys = { workspace = true, optional = true }
 serde.workspace = true
 tokio = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
 trading_data_dag = { workspace = true, optional = true }
-v_utils.workspace = true
-wasm-bindgen-futures = { workspace = true, optional = true }
-web-sys = { workspace = true, features = ["Document", "DomRect", "Element", "HtmlElement", "Window", "KeyboardEvent", "console"], optional = true }
-
-# Target-gated rather than behind `web`, because `dx` resolves the workspace under *default*
-# features to learn which wasm-bindgen to run: optional here and it can't see it at all.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen.workspace = true
 
 [lints]
 workspace = true

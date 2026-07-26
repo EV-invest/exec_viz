@@ -11,6 +11,9 @@
 //! let out = graph.tick_obs(batches, viz.at(ts_ns));
 //! viz.clone().serve(port).await;
 //! ```
+//!
+//! It owns no front-end either: the browser half is the sibling `exec_viz_web` bin, and the app
+//! points `EXEC_VIZ_WEB_DIR` at a built bundle of it.
 
 pub mod api_types;
 
@@ -22,8 +25,3 @@ mod server;
 mod tape;
 #[cfg(feature = "server")]
 pub use tape::Viz;
-
-#[cfg(feature = "web")]
-mod web;
-#[cfg(feature = "web")]
-pub use web::launch as launch_web;

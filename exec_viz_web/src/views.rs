@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use futures::StreamExt as _;
 use wasm_bindgen::JsCast as _;
 
-use crate::web::{dag, keyboard, state};
+use crate::{dag, keyboard, state};
 
 const CHART_ID: &str = "exec-chart";
 

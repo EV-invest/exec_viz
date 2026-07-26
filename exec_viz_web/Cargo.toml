@@ -1,0 +1,23 @@
+[package]
+name = "exec_viz_web"
+version = "0.1.0"
+edition = "2024"
+
+# wasm-only bin. `exec_viz` is pulled in with default features off — that leaves just `api_types`,
+# so none of the axum/tokio server half is dragged onto the wasm target.
+[dependencies]
+dioxus.workspace = true
+exec_viz.workspace = true
+futures.workspace = true
+getrandom.workspace = true
+gloo-net.workspace = true
+gloo-timers.workspace = true
+js-sys.workspace = true
+serde.workspace = true
+v_utils = { workspace = true, features = ["lightweight_charts", "wasm"] }
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+web-sys = { workspace = true, features = ["Document", "DomRect", "Element", "HtmlElement", "Window", "KeyboardEvent", "console"] }
+
+[lints]
+workspace = true

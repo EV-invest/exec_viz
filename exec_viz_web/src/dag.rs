@@ -7,11 +7,9 @@
 use std::collections::HashMap;
 
 use dioxus::prelude::*;
+use exec_viz::api_types::{Activation, TopoNode};
 
-use crate::{
-	api_types::{Activation, TopoNode},
-	web::state,
-};
+use crate::state;
 
 const DAG_ID: &str = "dag-root";
 

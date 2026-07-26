@@ -20,10 +20,6 @@ use crate::{
 	tape::Viz,
 };
 
-/// Compile-time root of the static assets dir (sibling of `src/`); only `lwc_draw.js` is served
-/// from here — the rest of the front-end is the `dx build` output.
-const ASSETS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets");
-
 impl Viz {
 	/// Serves the UI on `port` until the future is dropped. Cursor ops are plain scans over the
 	/// tape, so every handler is cheap enough to run inline on the async runtime.
@@ -54,12 +50,10 @@ impl Viz {
 	}
 }
 
-/// Root of the built front-end (`dx build` output). Overridable via `EXEC_VIZ_WEB_DIR`; defaults
-/// to the debug `dx` bundle dir so a build-then-run wrapper works as-is.
+/// Root of a built `exec_viz_web` bundle. The app supplies it — this crate ships no front-end, and
+/// guessing at a path inside its own checkout is how a stale bundle gets served silently.
 fn web_dir() -> PathBuf {
-	std::env::var_os("EXEC_VIZ_WEB_DIR")
-		.map(PathBuf::from)
-		.unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/dx/exec_viz/debug/web/public")))
+	PathBuf::from(std::env::var_os("EXEC_VIZ_WEB_DIR").expect("EXEC_VIZ_WEB_DIR: point it at a `dx build -p exec_viz_web` bundle"))
 }
 
 async fn topology(State(v): State<Viz>) -> impl IntoResponse {
@@ -106,11 +100,7 @@ async fn index(method: axum::http::Method) -> impl IntoResponse {
 }
 
 /// The chart shim's app half, served at the root URL the wasm side dynamically imports it from
-/// (`v_utils::lwc::mount(el, "/lwc_draw.js", …)`). Read live so an edit lands on the next reload.
+/// (`v_utils::lwc::mount(el, "/lwc_draw.js", …)`).
 async fn lwc_draw() -> impl IntoResponse {
-	let path = PathBuf::from(ASSETS_DIR).join("lwc_draw.js");
-	match tokio::fs::read_to_string(&path).await {
-		Ok(s) => ([(header::CONTENT_TYPE, HeaderValue::from_static("text/javascript"))], s).into_response(),
-		Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("read {}: {e}", path.display())).into_response(),
-	}
+	([(header::CONTENT_TYPE, HeaderValue::from_static("text/javascript"))], include_str!("../assets/lwc_draw.js"))
 }
