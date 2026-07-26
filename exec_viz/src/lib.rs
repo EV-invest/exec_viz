@@ -4,12 +4,12 @@
 //! values flowing — next to a candle chart.
 //!
 //! A library, not a runner. The app owns the graph, the feed and the runtime; it attaches a
-//! [`Viz`], hands it to its own `tick_obs`, and awaits [`Viz::serve`] wherever it likes:
+//! [`Viz`], hands it to its own `tick_obs`, and awaits [`Viz::serve`] on a port of its choosing:
 //!
 //! ```ignore
 //! let mut viz = Viz::new(Some("Bar1m"), 100_000, 60_000);
 //! let out = graph.tick_obs(batches, viz.at(ts_ns));
-//! viz.clone().serve(59994).await;
+//! viz.clone().serve(port).await;
 //! ```
 
 pub mod api_types;

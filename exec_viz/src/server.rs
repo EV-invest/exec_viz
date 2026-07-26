@@ -1,7 +1,8 @@
 //! axum router + JSON handlers over a [`Viz`] tape. Router shape (nested ServeDir + SPA
 //! `fallback`) mirrors `scam_pump_liqs/viz/src/server.rs`; the tape is a single mutex — this is a
-//! single-user study tool. Runtime-free: `serve` is a plain future, so whoever owns the graph also
-//! owns where the server runs. Any boot failure is a loud panic — no fallbacks.
+//! single-user study tool. Runtime-free: `serve` is a plain future taking the port it binds, so
+//! whoever owns the graph also owns where the server runs. Any boot failure is a loud panic — no
+//! fallbacks.
 
 use std::{net::SocketAddr, path::PathBuf};
 
@@ -24,8 +25,8 @@ use crate::{
 const ASSETS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets");
 
 impl Viz {
-	/// Serves the UI until the future is dropped. Cursor ops are plain scans over the tape, so
-	/// every handler is cheap enough to run inline on the async runtime.
+	/// Serves the UI on `port` until the future is dropped. Cursor ops are plain scans over the
+	/// tape, so every handler is cheap enough to run inline on the async runtime.
 	pub async fn serve(self, port: u16) {
 		// Dev study tool relaunched constantly: `no-store` everywhere so a cached asset can't
 		// silently break against a new API shape. All payloads here are small.
