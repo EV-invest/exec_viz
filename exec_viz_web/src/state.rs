@@ -78,9 +78,6 @@ fn apply(res: Result<ActivationFrame, String>) {
 	match res {
 		Ok(f) => {
 			set_cursor(f.ts_ns);
-			if f.tick >= f.total {
-				*PLAYING.write() = false;
-			}
 			*FRAME.write() = Some(f);
 		}
 		Err(e) => {

@@ -12,7 +12,7 @@ const CHART_ID: &str = "exec-chart";
 #[component]
 pub fn Replay() -> Element {
 	let topology = use_resource(state::fetch_topology);
-	let day = use_resource(state::fetch_day);
+	let mut day = use_resource(state::fetch_day);
 	let mut banner = use_signal(|| Option::<String>::None);
 
 	// Boot: pick up the server's current replay position (survives page reloads).
@@ -30,13 +30,20 @@ pub fn Replay() -> Element {
 		}
 	});
 
-	// Free-run: poll-step while playing; `apply` flips PLAYING off at day end or on error.
-	use_future(|| async {
+	// Free-run: poll-step while playing; `apply` flips PLAYING off only on error. Reaching the
+	// tape head is not an end — under a live run the tape grows behind us, so a step that lands
+	// on the head is just a poll, and the series it charts need re-fetching to keep up.
+	use_future(move || async move {
+		let mut polls = 0u32;
 		loop {
 			gloo_timers::future::TimeoutFuture::new(50).await;
 			if *state::PLAYING.peek() {
 				let n = *state::SPEED.peek();
 				state::step(n).await;
+				polls += 1;
+				if polls % 20 == 0 {
+					day.restart();
+				}
 			}
 		}
 	});
