@@ -72,10 +72,13 @@ pub struct DayOut {
 	pub price_node: Option<String>,
 }
 
-/// One node's output on the current tick. `out` is the compact `Display` (card face); `detail`
-/// is the full `Debug` (hover tooltip). `vals` are the flattened elements (`None` = didn't fire);
-/// `jac` is the row-major `vals.len() × sum(dep lens)` local Jacobian, entries `None` where the
-/// engine saw no signal (NaN doesn't survive serde_json).
+/// One node's standing output as of the current tick: `fired` says whether it was *this* tick's
+/// work, while `out`/`detail`/`vals` carry the last fired ones forward (`None` only before the
+/// node's first fire, or once that tick has left the ring). `out` is the compact `Display` (card
+/// face), `detail` the full `Debug` (hover tooltip), `vals` the flattened elements — a slot is
+/// `None` where the node left it empty. `jac` is the tick's own row-major `vals.len() × sum(dep
+/// lens)` local Jacobian — never carried forward — with entries `None` where the engine saw no
+/// signal (NaN doesn't survive serde_json).
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Activation {
 	pub node: String,
@@ -85,7 +88,7 @@ pub struct Activation {
 	pub detail: String,
 	pub fired: bool,
 	pub dims: Vec<usize>,
-	pub vals: Option<Vec<f64>>,
+	pub vals: Option<Vec<Option<f64>>>,
 	pub jac: Option<Vec<Option<f64>>>,
 }
 

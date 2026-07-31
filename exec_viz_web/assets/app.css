@@ -263,6 +263,50 @@ html, body, #main {
   margin-left: auto;
 }
 
+/* A buffered card sits on a stack of grey cards — the history standing behind the current out. */
+.dag-card.hist {
+  box-shadow: 3px 3px 0 -1px #10141e, 3px 3px 0 0 #333c4e, 6px 6px 0 -1px #10141e, 6px 6px 0 0 #2a3040;
+}
+
+/* Retention glyph docked at the foot of the buffered card. */
+.dag-hist {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 1px 4px;
+  border: 1px solid #2a3040;
+  border-radius: 3px;
+  background: #10141e;
+  color: #556070;
+  font-family: monospace;
+  font-size: 10px;
+  opacity: 0.6;
+  cursor: pointer;
+}
+
+.dag-hist.lit {
+  border-color: #7f8798;
+  opacity: 1;
+}
+
+.dag-hist.sel {
+  outline: 1px solid #e0b040;
+  opacity: 1;
+}
+
+.dag-hist-depth {
+  flex: 0 0 auto;
+  color: #9aa4b6;
+}
+
+.dag-hist-cells {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+
 .btn.off {
   opacity: 0.45;
   cursor: default;

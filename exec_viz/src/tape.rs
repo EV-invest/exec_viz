@@ -29,6 +29,7 @@ impl Viz {
 			topology: Vec::new(),
 			ticks: VecDeque::new(),
 			base: 0,
+			last_fired: Vec::new(),
 			series: Vec::new(),
 			bars: Vec::new(),
 			cursor: 0,
@@ -67,9 +68,10 @@ impl Observer for Viz {
 		let i = t.idx;
 		t.idx += 1;
 		if t.topology.len() == i {
+			let deps: Vec<String> = deps.iter().map(|d| buffered(&trim(d), &t.topology)).collect();
 			let node = TopoNode {
 				node: trim(node),
-				deps: deps.iter().map(|d| trim(d)).collect(),
+				deps,
 				gates: gates.iter().map(|g| trim(g)).collect(),
 				dims: fire.dims.to_vec(),
 				sketch: fire.sketch.into(),
@@ -96,11 +98,19 @@ impl Observer for Viz {
 			}
 		}
 
+		if t.last_fired.len() == i {
+			t.last_fired.push(None);
+		}
+		if fire.vals.is_some() {
+			let tick = t.total() - 1;
+			t.last_fired[i] = Some(tick);
+		}
 		let act = Act {
 			out: format!("{}", fire.glance),
 			detail: clip(&format!("{:?}", fire.debug)),
 			vals: fire.vals.map(<[f64]>::to_vec),
 			jac: fire.jac.map(<[f64]>::to_vec),
+			last_fired: t.last_fired[i],
 		};
 		t.ticks.back_mut().expect("`Viz::at` opens the tick before the graph steps").acts.push(act);
 	}
@@ -112,6 +122,9 @@ struct Act {
 	detail: String,
 	vals: Option<Vec<f64>>,
 	jac: Option<Vec<f64>>,
+	/// Absolute tick of this node's latest fire as of *this* tick (`Some(self)` when it fired), so
+	/// a scrubbed frame carries forward the value that was standing then, not the live one.
+	last_fired: Option<usize>,
 }
 
 struct Tick {
@@ -129,6 +142,8 @@ pub(crate) struct Tape {
 	ticks: VecDeque<Tick>,
 	/// Absolute index of `ticks[0]`; grows as the ring evicts, so tick numbers stay stable.
 	base: usize,
+	/// Per node (step index): absolute tick of its latest fire, stamped into each `Act`.
+	last_fired: Vec<Option<usize>>,
 	series: Vec<SeriesOut>,
 	bars: Vec<BarOut>,
 	/// Ticks consumed; the frame describes the one that consumed `cursor - 1`.
@@ -146,7 +161,9 @@ impl Tape {
 	pub(crate) fn day(&self) -> DayOut {
 		DayOut {
 			bars: self.bars.clone(),
-			series: self.series.clone(),
+			// A buffer's series is its source's, element for element — charting it would draw every
+			// buffered pane twice.
+			series: self.series.iter().filter(|s| !s.node.starts_with("Buffer<")).cloned().collect(),
 			price_node: self.price_node.clone(),
 		}
 	}
@@ -161,20 +178,32 @@ impl Tape {
 				t.acts
 					.iter()
 					.zip(&self.topology)
-					.map(|(a, n)| Activation {
-						node: n.node.clone(),
-						deps: n.deps.clone(),
-						gates: n.gates.clone(),
-						out: a.out.clone(),
-						detail: a.detail.clone(),
-						fired: a.vals.is_some(),
-						dims: n.dims.clone(),
-						vals: a.vals.clone(),
-						jac: a.jac.as_ref().map(|j| j.iter().map(|w| (!w.is_nan()).then_some(*w)).collect()),
+					.enumerate()
+					.map(|(i, (a, n))| {
+						// A quiet node still holds its last value: show it, `fired` is what says it's live.
+						let held = if a.vals.is_some() { a } else { self.held(i, a.last_fired).unwrap_or(a) };
+						Activation {
+							node: n.node.clone(),
+							deps: n.deps.clone(),
+							gates: n.gates.clone(),
+							out: held.out.clone(),
+							detail: held.detail.clone(),
+							fired: a.vals.is_some(),
+							dims: n.dims.clone(),
+							vals: held.vals.as_ref().map(|v| v.iter().map(|x| x.is_finite().then_some(*x)).collect()),
+							jac: a.jac.as_ref().map(|j| j.iter().map(|w| (!w.is_nan()).then_some(*w)).collect()),
+						}
 					})
 					.collect()
 			}),
 		}
+	}
+
+	/// Node `i`'s act on the tick it last fired; `None` once that tick has been evicted.
+	fn held(&self, i: usize, last_fired: Option<usize>) -> Option<&Act> {
+		let act = self.ticks.get(last_fired?.checked_sub(self.base)?)?.acts.get(i)?;
+		assert!(act.vals.is_some(), "`last_fired` points at a tick where the node fired");
+		Some(act)
 	}
 
 	pub(crate) fn step(&mut self, n: usize) -> ActivationFrame {
@@ -256,6 +285,24 @@ fn clip(detail: &str) -> String {
 		Some((i, _)) => format!("{}…", &detail[..i]),
 		None => detail.to_string(),
 	}
+}
+
+/// `Buffering<X, J>` names a *shape*, not a frame node — the node the client must draw the edge to
+/// is the `Buffer<X, K>` that serves it. A buffer always precedes its consumers in step order, so
+/// `topology` already holds it. Non-`Buffering` deps pass through.
+fn buffered(dep: &str, topology: &[TopoNode]) -> String {
+	let Some(inner) = dep.strip_prefix("Buffering<").and_then(|s| s.strip_suffix('>')) else {
+		return dep.to_string();
+	};
+	// `J` is a `usize` literal, so the last comma is the top-level one.
+	let series = inner[..inner.rfind(',').expect("Buffering<C, J> has two arguments")].trim_end();
+	let prefix = format!("Buffer<{series},");
+	topology
+		.iter()
+		.map(|t| &t.node)
+		.find(|n| n.starts_with(&prefix))
+		.unwrap_or_else(|| panic!("{dep} has no `Buffer<{series}, _>` ahead of it in the graph"))
+		.clone()
 }
 
 /// Generics-aware last-`::`-segment: `nodes::Rsi<14>` → `Rsi<14>` (path segments inside `<>`

@@ -27,6 +27,18 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 		}
 	}
 
+	// A buffer is an adornment on its source, not a peer: `source -> (buffer node, depth)`. Its
+	// single dep is the series it retains, and one buffer per series makes the map total.
+	let hist: HashMap<String, (String, String)> = topology
+		.iter()
+		.filter_map(|n| {
+			let depth = n.node.strip_suffix('>')?.rsplit_once(',')?.1.trim().to_string();
+			n.node
+				.starts_with("Buffer<")
+				.then(|| (n.deps.first().expect("a buffer has one dep").clone(), (n.node.clone(), depth)))
+		})
+		.collect();
+
 	// `level(node) = 1 + max(level(deps))`, roots 0 — one pass works because the server sends
 	// nodes in step (= topo) order.
 	let mut level: HashMap<String, usize> = HashMap::new();
@@ -34,8 +46,8 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	for n in &topology {
 		let l = n.deps.iter().map(|d| level.get(d).expect("topo order: dep precedes node") + 1).max().unwrap_or(0);
 		level.insert(n.node.clone(), l);
-		if gate_set.contains(&n.node) {
-			continue; // gates render as switch glyphs docked on the gated card, not peer cards
+		if gate_set.contains(&n.node) || hist.values().any(|(b, _)| *b == n.node) {
+			continue; // gates and buffers dock onto a card, they are not peer cards
 		}
 		if cols.len() <= l {
 			cols.resize_with(l + 1, Vec::new);
@@ -51,9 +63,9 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 			for a in &frame.activations {
 				if let Some(vals) = &a.vals {
 					let e = r.entry(a.node.clone()).or_insert_with(|| vec![(f64::INFINITY, f64::NEG_INFINITY); vals.len()]);
-					for (i, v) in vals.iter().enumerate() {
-						e[i].0 = e[i].0.min(*v);
-						e[i].1 = e[i].1.max(*v);
+					for (i, v) in vals.iter().enumerate().filter_map(|(i, v)| v.map(|v| (i, v))) {
+						e[i].0 = e[i].0.min(v);
+						e[i].1 = e[i].1.max(v);
 					}
 				}
 			}
@@ -68,12 +80,18 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	});
 
 	let frame = state::FRAME();
-	let acts: HashMap<String, (bool, String, String, Option<Vec<f64>>)> = frame
+	let acts: HashMap<String, (bool, String, String, Option<Vec<Option<f64>>>)> = frame
 		.iter()
 		.flat_map(|f| f.activations.iter())
 		.map(|a| (a.node.clone(), (a.fired, a.out.clone(), a.detail.clone(), a.vals.clone())))
 		.collect();
-	let hovered_deps: Vec<String> = hover().node().and_then(|h| topology.iter().find(|n| n.node == h).map(|n| n.deps.clone())).unwrap_or_default();
+	// a dep naming a buffer highlights the *series* card, which is where the buffer is drawn
+	let src_of: HashMap<&str, &str> = hist.iter().map(|(src, (buf, _))| (buf.as_str(), src.as_str())).collect();
+	let hovered_deps: Vec<String> = hover()
+		.node()
+		.and_then(|h| topology.iter().find(|n| n.node == h))
+		.map(|n| n.deps.iter().map(|d| src_of.get(d.as_str()).map_or(d.clone(), |s| (*s).to_string())).collect())
+		.unwrap_or_default();
 	let hovered_node: Option<String> = hover().node().map(str::to_string);
 
 	rsx! {
@@ -86,10 +104,11 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 							let dep_hl = hovered_deps.contains(&n.node);
 							let selected = state::SELECTED().contains(&n.node);
 							let class = format!(
-								"dag-card{}{}{}",
+								"dag-card{}{}{}{}",
 								if fired { " lit" } else { "" },
 								if dep_hl { " dep" } else { "" },
 								if selected { " sel" } else { "" },
+								if hist.contains_key(&n.node) { " hist" } else { "" },
 							);
 							let name = n.node.clone();
 							let clicked = n.node.clone();
@@ -113,17 +132,16 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 											let gt = topology.iter().find(|t| t.node == g).expect("gate listed in topology");
 											assert_eq!(gt.dims.iter().product::<usize>(), 1, "gate glyph assumes a scalar gate");
 											let (gfired, _, gdetail, gvals) = acts.get(&g).cloned().unwrap_or((false, String::new(), String::new(), None));
-											let open = gvals.as_ref().is_some_and(|v| v[0] != 0.0);
+											let open = gvals.as_ref().is_some_and(|v| v[0].is_some_and(|x| x != 0.0));
 											let gclass = format!(
 												"dag-gate{}{}",
 												if gfired { " lit" } else { "" },
 												if state::SELECTED().contains(&g) { " sel" } else { "" },
 											);
-											let (txt, gheat) = match gvals.as_ref().map(|v| v[0]) {
-												Some(v) => (fmt_val(v), heat(ranges_r.get(&g).and_then(|r| r.first()), v)),
-												None => (String::new(), 0.0),
+											let (txt, gheat, cell_class) = match gvals.as_ref().and_then(|v| v[0]) {
+												Some(v) => (fmt_val(v), heat(ranges_r.get(&g).and_then(|r| r.first()), v), "dag-cell"),
+												None => (String::new(), 0.0, "dag-cell dim"),
 											};
-											let cell_class = if gvals.is_some() { "dag-cell" } else { "dag-cell dim" };
 											let enter = g.clone();
 											let leave = n.node.clone();
 											let clicked = g.clone();
@@ -174,10 +192,9 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 										style: "grid-template-columns: repeat({gcols}, minmax(24px, 1fr));",
 										for i in 0..len {
 											{
-												let cell_class = if vals.is_some() { "dag-cell" } else { "dag-cell dim" };
-												let (txt, heat) = match vals.as_ref().map(|v| v[i]) {
-													Some(v) => (fmt_val(v), heat(node_ranges.and_then(|r| r.get(i)), v)),
-													None => (String::new(), 0.0),
+												let (txt, heat, cell_class) = match vals.as_ref().and_then(|v| v[i]) {
+													Some(v) => (fmt_val(v), heat(node_ranges.and_then(|r| r.get(i)), v), "dag-cell"),
+													None => (String::new(), 0.0, "dag-cell dim"),
 												};
 												let enter = n.node.clone();
 												let leave = n.node.clone();
@@ -189,6 +206,46 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 														onmouseenter: move |_| hover.set(Hover::Cell(enter.clone(), i)),
 														onmouseleave: move |_| hover.set(Hover::Card(leave.clone())),
 														"{txt}"
+													}
+												}
+											}
+										}
+									}
+									// retention glyph docked at the foot of the buffered card; its cells keep the
+									// `dagel-` ids the Jacobian overlay measures against.
+									if let Some((buf, depth)) = hist.get(&n.node) {
+										{
+											let (bfired, _, bdetail, bvals) = acts.get(buf).cloned().unwrap_or((false, String::new(), String::new(), None));
+											let bclass = format!(
+												"dag-hist{}{}",
+												if bfired { " lit" } else { "" },
+												if state::SELECTED().contains(buf) { " sel" } else { "" },
+											);
+											let (b, enter, clicked) = (buf.clone(), buf.clone(), buf.clone());
+											let leave = n.node.clone();
+											rsx! {
+												div {
+													key: "{b}",
+													id: "dagcard-{b}",
+													class: "{bclass}",
+													onmouseenter: move |_| hover.set(Hover::Card(enter.clone())),
+													onmouseleave: move |_| hover.set(Hover::Card(leave.clone())),
+													onclick: move |e| {
+														e.stop_propagation();
+														state::toggle_select(&clicked);
+													},
+													span { class: "dag-hist-depth", "⌸ {depth}" }
+													div { class: "dag-hist-cells",
+														for i in 0..len {
+															div {
+																id: "dagel-{b}-{i}",
+																class: if bvals.as_ref().is_some_and(|v| v[i].is_some()) { "dag-cell" } else { "dag-cell dim" },
+																{bvals.as_ref().and_then(|v| v[i]).map_or(String::new(), fmt_val)}
+															}
+														}
+													}
+													if !bdetail.is_empty() && hovered_node.as_deref() == Some(b.as_str()) {
+														div { class: "dag-tip", "{bdetail}" }
 													}
 												}
 											}
