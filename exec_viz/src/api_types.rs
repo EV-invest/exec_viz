@@ -14,7 +14,7 @@ pub struct TopoNode {
 	pub deps: Vec<String>,
 	pub gates: Vec<String>,
 	pub dims: Vec<usize>,
-	pub sketch: SketchOut,
+	pub plots: Vec<PlotOut>,
 }
 
 /// Serde mirror of `trading_data_dag::Ink`: l/c/a only — hue stays renderer-owned.
@@ -32,9 +32,12 @@ pub struct GuideOut {
 	pub ink: InkOut,
 }
 
-/// Serde mirror of `trading_data_dag::Sketch`.
+/// Serde mirror of `trading_data_dag::Plot`. `slots` indexes the node's flattened elements
+/// (empty = all of them), so a node whose out mixes units draws as several plots, each on its
+/// own scale, rather than as several nodes.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct SketchOut {
+pub struct PlotOut {
+	pub slots: Vec<usize>,
 	pub range: Option<(f64, f64)>,
 	pub guides: Vec<GuideOut>,
 	pub labels: Vec<String>,
@@ -57,7 +60,7 @@ pub struct SeriesOut {
 	pub deps: Vec<String>,
 	pub gates: Vec<String>,
 	pub dims: Vec<usize>,
-	pub sketch: SketchOut,
+	pub plots: Vec<PlotOut>,
 	pub points: Vec<PointOut>,
 }
 

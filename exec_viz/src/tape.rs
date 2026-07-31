@@ -10,9 +10,9 @@ use std::{
 	sync::{Arc, Mutex, MutexGuard},
 };
 
-use trading_data_dag::{Fire, Ink, Observer, Sketch};
+use trading_data_dag::{Fire, Ink, Observer, Plot};
 
-use crate::api_types::{Activation, ActivationFrame, BarOut, DayOut, GuideOut, InkOut, PointOut, SeriesOut, SketchOut, TopoNode};
+use crate::api_types::{Activation, ActivationFrame, BarOut, DayOut, GuideOut, InkOut, PlotOut, PointOut, SeriesOut, TopoNode};
 
 #[derive(Clone)]
 pub struct Viz(Arc<Mutex<Tape>>);
@@ -74,14 +74,14 @@ impl Observer for Viz {
 				deps,
 				gates: gates.iter().map(|g| trim(g)).collect(),
 				dims: fire.dims.to_vec(),
-				sketch: fire.sketch.into(),
+				plots: fire.plots.iter().map(PlotOut::from).collect(),
 			};
 			t.series.push(SeriesOut {
 				node: node.node.clone(),
 				deps: node.deps.clone(),
 				gates: node.gates.clone(),
 				dims: node.dims.clone(),
-				sketch: node.sketch.clone(),
+				plots: node.plots.clone(),
 				points: Vec::new(),
 			});
 			t.topology.push(node);
@@ -256,12 +256,13 @@ impl Tape {
 	}
 }
 
-impl From<&Sketch> for SketchOut {
-	fn from(s: &Sketch) -> Self {
+impl From<&Plot> for PlotOut {
+	fn from(p: &Plot) -> Self {
 		let ink = |i: &Ink| InkOut { l: i.l, c: i.c, a: i.a };
-		SketchOut {
-			range: s.range,
-			guides: s
+		PlotOut {
+			slots: p.slots.to_vec(),
+			range: p.range,
+			guides: p
 				.guides
 				.iter()
 				.map(|g| GuideOut {
@@ -270,9 +271,9 @@ impl From<&Sketch> for SketchOut {
 					ink: ink(&g.ink),
 				})
 				.collect(),
-			labels: s.labels.iter().map(|l| l.to_string()).collect(),
-			inks: s.inks.iter().map(ink).collect(),
-			overlay: s.overlay,
+			labels: p.labels.iter().map(|l| l.to_string()).collect(),
+			inks: p.inks.iter().map(ink).collect(),
+			overlay: p.overlay,
 		}
 	}
 }

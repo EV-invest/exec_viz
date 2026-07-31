@@ -155,35 +155,46 @@ function addIndicatorPanes(chart, data, st) {
   const depth = new Map();
   for (const s of series) depth.set(s.node, s.deps.length ? 1 + Math.max(...s.deps.map((d) => depth.get(d))) : 0);
   const len = (s) => s.dims.reduce((a, b) => a * b, 1);
+  // One drawable per plot, not per node: scale is what shares an axis, so a node whose out mixes
+  // units (a quantity next to a price) draws as several, each picking its own `slots` of `vals`.
+  const explode = (s) => s.plots.map((plot, pi) => ({
+    node: s.node,
+    key: `${s.node}#${pi}`,
+    plot,
+    slots: plot.slots.length ? plot.slots : Array.from({ length: len(s) }, (_, k) => k),
+    points: s.points,
+  }));
   // roots (depth 0) and the candle source are the price chart itself, not indicators.
-  const drawable = series.filter((s) => depth.get(s.node) >= 1 && s.node !== data.price_node);
+  const drawable = series.filter((s) => depth.get(s.node) >= 1 && s.node !== data.price_node).flatMap(explode);
   // a gate nobody consumes gates nothing (same rule as the DAG panel)
   const gateSet = new Set(series.flatMap((s) => s.gates));
-  const gates = drawable.filter((s) => gateSet.has(s.node) && !s.sketch.overlay);
+  const gates = drawable.filter((s) => gateSet.has(s.node) && !s.plot.overlay);
 
   let slots = 0;
   const slot0 = new Map();
-  for (const s of drawable) { slot0.set(s.node, slots); slots += len(s); }
-  const hue = (s, i) => (360 * (slot0.get(s.node) + i)) / Math.max(slots, 1);
-  const ink = (s, i) => s.sketch.inks[i] ?? MAIN_INK;
+  for (const s of drawable) { slot0.set(s.key, slots); slots += s.slots.length; }
+  const hue = (s, i) => (360 * (slot0.get(s.key) + i)) / Math.max(slots, 1);
+  const ink = (s, i) => s.plot.inks[i] ?? MAIN_INK;
+  // `k` indexes the plot's own elements; `slots[k]` is where that element sits in the node's flat out.
+  const val = (s, p, k) => p.vals[s.slots[k]];
 
-  const overlays = drawable.filter((s) => s.sketch.overlay);
-  const indicators = drawable.filter((s) => !gateSet.has(s.node) && !s.sketch.overlay);
+  const overlays = drawable.filter((s) => s.plot.overlay);
+  const indicators = drawable.filter((s) => !gateSet.has(s.node) && !s.plot.overlay);
   for (const d of [...new Set(indicators.map((s) => depth.get(s.node)))].sort((a, b) => a - b)) {
     const pane = chart.panes().length;
     const nodes = indicators.filter((s) => depth.get(s.node) === d);
     for (const s of nodes) {
-      const n = len(s);
-      const opts = { priceScaleId: `ind-${s.node}`, lastValueVisible: false, priceLineVisible: false };
-      if (s.sketch.range) {
-        const [minValue, maxValue] = s.sketch.range;
+      const n = s.slots.length;
+      const opts = { priceScaleId: `ind-${s.key}`, lastValueVisible: false, priceLineVisible: false };
+      if (s.plot.range) {
+        const [minValue, maxValue] = s.plot.range;
         opts.autoscaleInfoProvider = () => ({ priceRange: { minValue, maxValue } });
       }
-      const label = (k) => s.sketch.labels[k] ?? (n > 1 ? `[${k}]` : "");
+      const label = (k) => s.plot.labels[k] ?? (n > 1 ? `[${k}]` : "");
       tipFrom(st.tip, s.points, (p) => p.ts_ms / 1000,
         (p) => [
           { text: s.node, color: oklch(ink(s, 0), hue(s, 0)) },
-          ...Array.from({ length: n }, (_, k) => ({ text: `  ${label(k) ? label(k) + " " : ""}${fmt(p.vals[k])}`, color: oklch(ink(s, k), hue(s, k)) })),
+          ...Array.from({ length: n }, (_, k) => ({ text: `  ${label(k) ? label(k) + " " : ""}${fmt(val(s, p, k))}`, color: oklch(ink(s, k), hue(s, k)) })),
         ],
         pane, null);
       let guideHost = null;
@@ -194,7 +205,7 @@ function addIndicatorPanes(chart, data, st) {
         for (const p of s.points) {
           let cum = 0;
           for (let k = 0; k < n; k++) {
-            const v = p.vals[k];
+            const v = val(s, p, k);
             if (!Number.isFinite(v)) continue;
             cum += v;
             const w = Math.max(0, Math.min(1, v));
@@ -209,36 +220,36 @@ function addIndicatorPanes(chart, data, st) {
         }
       } else {
         const line = chart.addSeries(LineSeries, { ...opts, color: oklch(ink(s, 0), hue(s, 0)), lineWidth: 1 }, pane);
-        line.setData(s.points.filter((p) => Number.isFinite(p.vals[0])).map((p) => ({ time: p.ts_ms / 1000, value: p.vals[0] })));
+        line.setData(s.points.filter((p) => Number.isFinite(val(s, p, 0))).map((p) => ({ time: p.ts_ms / 1000, value: val(s, p, 0) })));
         st.series.push(line);
         guideHost = line;
       }
-      for (const g of s.sketch.guides) {
+      for (const g of s.plot.guides) {
         guideHost.createPriceLine({ price: g.value, color: oklch(g.ink, hue(s, 0)), lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: false, title: g.label });
       }
     }
-    const text = nodes.map((s) => (s.sketch.labels.length ? `${s.node} (${s.sketch.labels.join(" · ")})` : s.node)).join("   ");
+    const text = nodes.map((s) => (s.plot.labels.length ? `${s.node} (${s.plot.labels.join(" · ")})` : s.node)).join("   ");
     createTextWatermark(chart.panes()[pane], { horzAlign: "left", vertAlign: "top", lines: [{ text, color: "rgba(150,160,180,0.55)", fontSize: 10 }] });
   }
 
   // price-denominated series drawn on the candle pane (pane 0), on the shared price scale.
   for (const s of overlays) {
-    const n = len(s);
-    const label = (k) => s.sketch.labels[k] ?? (n > 1 ? `[${k}]` : "");
+    const n = s.slots.length;
+    const label = (k) => s.plot.labels[k] ?? (n > 1 ? `[${k}]` : "");
     tipFrom(st.tip, s.points, (p) => p.ts_ms / 1000,
       (p) => [
         { text: s.node, color: oklch(ink(s, 0), hue(s, 0)) },
-        ...Array.from({ length: n }, (_, k) => ({ text: `  ${label(k) ? label(k) + " " : ""}${fmt(p.vals[k])}`, color: oklch(ink(s, k), hue(s, k)) })),
+        ...Array.from({ length: n }, (_, k) => ({ text: `  ${label(k) ? label(k) + " " : ""}${fmt(val(s, p, k))}`, color: oklch(ink(s, k), hue(s, k)) })),
       ],
       0, null);
     let guideHost = null;
     for (let k = 0; k < n; k++) {
       const line = chart.addSeries(LineSeries, { priceScaleId: "right", lastValueVisible: false, priceLineVisible: false, color: oklch(ink(s, k), hue(s, k)), lineWidth: 1 }, 0);
-      line.setData(s.points.filter((p) => Number.isFinite(p.vals[k])).map((p) => ({ time: p.ts_ms / 1000, value: p.vals[k] })));
+      line.setData(s.points.filter((p) => Number.isFinite(val(s, p, k))).map((p) => ({ time: p.ts_ms / 1000, value: val(s, p, k) })));
       st.series.push(line);
       guideHost = line;
     }
-    for (const g of s.sketch.guides) {
+    for (const g of s.plot.guides) {
       guideHost.createPriceLine({ price: g.value, color: oklch(g.ink, hue(s, 0)), lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: false, title: g.label });
     }
   }
@@ -249,7 +260,7 @@ function addIndicatorPanes(chart, data, st) {
     for (const s of gates) {
       const color = oklch(ink(s, 0), hue(s, 0));
       const line = chart.addSeries(LineSeries, {
-        priceScaleId: `ind-${s.node}`,
+        priceScaleId: `ind-${s.key}`,
         lastValueVisible: false,
         priceLineVisible: false,
         color,
@@ -258,9 +269,9 @@ function addIndicatorPanes(chart, data, st) {
         // fixed 0/1 frame with margin so the square wave never rescales
         autoscaleInfoProvider: () => ({ priceRange: { minValue: -0.25, maxValue: 1.25 } }),
       }, pane);
-      line.setData(s.points.filter((p) => Number.isFinite(p.vals[0])).map((p) => ({ time: p.ts_ms / 1000, value: p.vals[0] })));
+      line.setData(s.points.filter((p) => Number.isFinite(val(s, p, 0))).map((p) => ({ time: p.ts_ms / 1000, value: val(s, p, 0) })));
       st.series.push(line);
-      tipFrom(st.tip, s.points, (p) => p.ts_ms / 1000, (p) => `${s.node} ${p.vals[0] !== 0 ? "open" : "closed"}`, pane, color);
+      tipFrom(st.tip, s.points, (p) => p.ts_ms / 1000, (p) => `${s.node} ${val(s, p, 0) !== 0 ? "open" : "closed"}`, pane, color);
     }
     createTextWatermark(chart.panes()[pane], { horzAlign: "left", vertAlign: "top", lines: [{ text: gates.map((s) => `⏻ ${s.node}`).join("   "), color: "rgba(150,160,180,0.55)", fontSize: 10 }] });
   }
