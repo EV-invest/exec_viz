@@ -29,6 +29,7 @@ impl Viz {
 			topology: Vec::new(),
 			ticks: VecDeque::new(),
 			base: 0,
+			sealed: false,
 			last_fired: Vec::new(),
 			series: Vec::new(),
 			bars: Vec::new(),
@@ -57,8 +58,16 @@ impl Viz {
 		self.lock().bars.push(bar);
 	}
 
+	/// Ends the recording: the tick `at` opened last becomes addressable and `total` stops growing.
+	/// By value, so the handle you recorded through is spent. A live feed never calls this.
+	pub fn seal(self) {
+		self.lock().sealed = true;
+	}
+
 	pub(crate) fn lock(&self) -> MutexGuard<'_, Tape> {
-		self.0.lock().expect("tape mutex poisoned by a panicking observer")
+		// Served concurrently with the recording it describes: a panicking handler must not cost the
+		// run its tape. Every op leaves the tape consistent, so the inner value is still readable.
+		self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 	}
 }
 
@@ -142,6 +151,8 @@ pub(crate) struct Tape {
 	ticks: VecDeque<Tick>,
 	/// Absolute index of `ticks[0]`; grows as the ring evicts, so tick numbers stay stable.
 	base: usize,
+	/// The recording is over — see [`Tape::head`].
+	sealed: bool,
 	/// Per node (step index): absolute tick of its latest fire, stamped into each `Act`.
 	last_fired: Vec<Option<usize>>,
 	series: Vec<SeriesOut>,
@@ -154,8 +165,16 @@ pub(crate) struct Tape {
 }
 
 impl Tape {
+	/// Last addressable cursor. `at` opens a tick before the graph sweeps it, so until the recording
+	/// is sealed the newest tick is still being written and is not a frame anyone may see.
+	fn head(&self) -> usize {
+		if self.sealed { self.total() } else { self.total().saturating_sub(1) }
+	}
+
+	/// Empty until the first tick closes: `Observer::on` grows this one node at a time *within* a
+	/// tick, and a client topo-sorting a prefix would find a node whose deps aren't there yet.
 	pub(crate) fn topology(&self) -> Vec<TopoNode> {
-		self.topology.clone()
+		if self.head() < 1 { Vec::new() } else { self.topology.clone() }
 	}
 
 	pub(crate) fn day(&self) -> DayOut {
@@ -172,7 +191,9 @@ impl Tape {
 		let tick = self.cursor.checked_sub(1).and_then(|i| i.checked_sub(self.base)).and_then(|i| self.ticks.get(i));
 		ActivationFrame {
 			tick: self.cursor,
-			total: self.total(),
+			total: self.head(),
+			sealed: self.sealed,
+			pending: false,
 			ts_ns: tick.map_or(0, |t| t.ts_ns),
 			activations: tick.map_or_else(Vec::new, |t| {
 				t.acts
@@ -207,13 +228,24 @@ impl Tape {
 	}
 
 	pub(crate) fn step(&mut self, n: usize) -> ActivationFrame {
-		self.cursor = self.cursor.saturating_add(n).clamp(self.base, self.total());
-		self.frame()
+		let target = self.cursor.saturating_add(n);
+		self.cursor = self.bound(target);
+		let mut f = self.frame();
+		f.pending = !self.sealed && target > self.head();
+		f
 	}
 
 	pub(crate) fn seek(&mut self, tick: usize) -> ActivationFrame {
-		self.cursor = tick.clamp(self.base, self.total());
-		self.frame()
+		self.cursor = self.bound(tick);
+		let mut f = self.frame();
+		f.pending = !self.sealed && tick > self.head();
+		f
+	}
+
+	/// `base` itself is not a cursor: `frame` describes the tick *before* the cursor, so the oldest
+	/// one still in the ring is reached at `base + 1`.
+	fn bound(&self, tick: usize) -> usize {
+		tick.clamp((self.base + 1).min(self.head()), self.head())
 	}
 
 	/// Advance until `node` (trimmed name) fires, or the recording ends.
@@ -241,14 +273,18 @@ impl Tape {
 	}
 
 	fn scan(&mut self, hit: impl Fn(&Tick) -> bool) -> ActivationFrame {
-		self.cursor = self.cursor.max(self.base);
-		while self.cursor < self.total() {
+		self.cursor = self.bound(self.cursor);
+		let mut found = false;
+		while self.cursor < self.head() {
 			self.cursor += 1;
 			if hit(&self.ticks[self.cursor - 1 - self.base]) {
+				found = true;
 				break;
 			}
 		}
-		self.frame()
+		let mut f = self.frame();
+		f.pending = !self.sealed && !found;
+		f
 	}
 
 	fn total(&self) -> usize {

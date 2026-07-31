@@ -1,7 +1,11 @@
 //! Data layer + shared state: all `/api/*` calls, the current [`ActivationFrame`], and the
 //! free-run knobs. Every frame that lands also moves the chart's replay cursor.
+//!
+//! The tape is served while it is still being written, so an op can name a tick that has not been
+//! recorded yet. The server says so (`pending`) rather than blocking, and [`WAITING`] is how the UI
+//! shows which control is still chasing the feed.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, future::Future};
 
 use dioxus::prelude::*;
 use exec_viz::api_types::{ActivationFrame, SeekReq, StepReq, StepUntilChangeReq, StepUntilReq, TopoNode};
@@ -15,9 +19,21 @@ pub static SPEED: GlobalSignal<usize> = Signal::global(|| 512);
 pub static ERROR: GlobalSignal<Option<String>> = Signal::global(|| None);
 /// Click-selected DAG nodes — the "skip to next change in any of these" set.
 pub static SELECTED: GlobalSignal<HashSet<String>> = Signal::global(HashSet::new);
+/// Key of the control whose op outran the recording and is re-issuing itself.
+pub static WAITING: GlobalSignal<Option<String>> = Signal::global(|| None);
+/// Bumped by each retrying op, so a newer one supersedes an older one's loop.
+static GENERATION: GlobalSignal<u64> = Signal::global(|| 0);
 
+/// Empty until the recording's first tick closes: the server withholds a half-built topology, and
+/// the resource stays `None` (= "loading…") until there is a whole one.
 pub async fn fetch_topology() -> Result<Vec<TopoNode>, String> {
-	get_json("/api/topology").await
+	loop {
+		let t: Vec<TopoNode> = get_json("/api/topology").await?;
+		if !t.is_empty() {
+			return Ok(t);
+		}
+		gloo_timers::future::TimeoutFuture::new(100).await;
+	}
 }
 
 /// Raw `/api/day` body — never parsed by Rust, handed straight to the chart shim.
@@ -31,16 +47,23 @@ pub async fn refresh_status() {
 	apply(get_json("/api/status").await);
 }
 
+/// Free-run's stepper: takes whatever the tape has. Sitting at the head while playing is the feed
+/// pacing us, not a wait, so `pending` is ignored and no control is marked.
 pub async fn step(n: usize) {
 	apply(post_json("/api/step", &StepReq { n }).await);
 }
 
+pub async fn step_one() {
+	until_recorded("step", || async { post_json("/api/step", &StepReq { n: 1 }).await }).await;
+}
+
 pub async fn seek(tick: usize) {
-	apply(post_json("/api/seek", &SeekReq { tick }).await);
+	until_recorded("seek", || async move { post_json("/api/seek", &SeekReq { tick }).await }).await;
 }
 
 pub async fn step_until(node: &str) {
-	apply(post_json("/api/step_until", &StepUntilReq { node: node.to_string() }).await);
+	let node = node.to_string();
+	until_recorded(&node, || async { post_json("/api/step_until", &StepUntilReq { node: node.clone() }).await }).await;
 }
 
 /// Skip to the next change in any selected node. No selection ⇒ no-op.
@@ -49,7 +72,35 @@ pub async fn step_until_change() {
 	if nodes.is_empty() {
 		return;
 	}
-	apply(post_json("/api/step_until_change", &StepUntilChangeReq { nodes }).await);
+	until_recorded("change", || async { post_json("/api/step_until_change", &StepUntilChangeReq { nodes: nodes.clone() }).await }).await;
+}
+
+/// Re-issues `op` every 100ms while the tape cannot yet satisfy it, holding `key` in [`WAITING`].
+/// Re-issuing is what makes this correct without server-side state: `seek` is absolute, a scan
+/// resumes from wherever it got to, and a `pending` step advanced nothing.
+async fn until_recorded<F, Fut>(key: &str, op: F)
+where
+	F: Fn() -> Fut,
+	Fut: Future<Output = Result<ActivationFrame, String>>,
+{
+	let generation = *GENERATION.peek() + 1;
+	*GENERATION.write() = generation;
+	*WAITING.write() = Some(key.to_string());
+	loop {
+		let res = op().await;
+		// A newer op owns the cursor and `WAITING` now; applying this would jump the cursor back to
+		// where a superseded request left it.
+		if *GENERATION.peek() != generation {
+			return;
+		}
+		let pending = matches!(&res, Ok(f) if f.pending);
+		apply(res);
+		if !pending {
+			break;
+		}
+		gloo_timers::future::TimeoutFuture::new(100).await;
+	}
+	*WAITING.write() = None;
 }
 
 pub fn toggle_select(node: &str) {
@@ -77,6 +128,12 @@ pub fn speed_down() {
 fn apply(res: Result<ActivationFrame, String>) {
 	match res {
 		Ok(f) => {
+			// A retry loop re-fetches the same frame ten times a second; writing it would re-run the
+			// DAG's layout pass each time for a render that cannot differ.
+			let same = FRAME.peek().as_ref() == Some(&f);
+			if same {
+				return;
+			}
 			set_cursor(f.ts_ns);
 			*FRAME.write() = Some(f);
 		}

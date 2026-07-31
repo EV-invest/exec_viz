@@ -4,12 +4,17 @@
 //! values flowing — next to a candle chart.
 //!
 //! A library, not a runner. The app owns the graph, the feed and the runtime; it attaches a
-//! [`Viz`], hands it to its own `tick_obs`, and awaits [`Viz::serve`] on a port of its choosing:
+//! [`Viz`], hands it to its own `tick_obs`, and drives [`Viz::serve_on`] on a port of its choosing.
+//! Every handler reads whatever has been recorded so far, so the server can run *alongside* the
+//! recording — [`Viz::bind`] is separate precisely so the URL answers before the work begins:
 //!
 //! ```ignore
 //! let mut viz = Viz::new(Some("Bar1m"), 100_000, 60_000);
-//! let out = graph.tick_obs(batches, viz.at(ts_ns));
-//! viz.clone().serve(port).await;
+//! let server = viz.clone().serve_on(Viz::bind(port).await);
+//! tokio::join!(server, async {
+//!     let out = graph.tick_obs(batches, viz.at(ts_ns));
+//!     viz.seal(); // a finite recording says so; a live feed never does
+//! });
 //! ```
 //!
 //! It owns no front-end either: the browser half is the sibling `exec_viz_web` bin, and the app

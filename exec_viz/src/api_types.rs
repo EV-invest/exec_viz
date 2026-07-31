@@ -101,6 +101,10 @@ pub struct Activation {
 pub struct ActivationFrame {
 	pub tick: usize,
 	pub total: usize,
+	/// The recording is over: `total` will not grow again.
+	pub sealed: bool,
+	/// This op ran out of recorded ticks — re-issuing it later will get further.
+	pub pending: bool,
 	pub ts_ns: i64,
 	pub activations: Vec<Activation>,
 }

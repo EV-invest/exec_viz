@@ -312,6 +312,20 @@ html, body, #main {
   cursor: default;
 }
 
+/* An op that asked for a tick the recording hasn't reached: it re-issues itself until the tape
+   catches up. Single-class like `.btn`/`.pos`, so it must stay below both to win. */
+.waiting {
+  border: 1px solid #8a6d1f;
+  color: #d8a83a;
+  animation: waiting-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes waiting-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
 .dag-name {
   font-weight: 600;
   font-size: 12px;

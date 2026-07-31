@@ -311,5 +311,11 @@ export function draw(chart, data, viewSpec) {
   window.__execVizSetCursor = (tsSec) => cursor.set(tsSec);
 
   chart.__ev = st;
-  chart.timeScale().fitContent();
+  // Only the first draw with anything in it frames the data: under a live feed `draw` re-runs on
+  // every refetch, and fitting again would throw away whatever the user had zoomed to. Kept off
+  // `__ev`, which `teardown` clears at the top of every draw.
+  if (!chart.__evFitted && data.bars.length) {
+    chart.__evFitted = true;
+    chart.timeScale().fitContent();
+  }
 }

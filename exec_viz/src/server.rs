@@ -21,9 +21,16 @@ use crate::{
 };
 
 impl Viz {
-	/// Serves the UI on `port` until the future is dropped. Cursor ops are plain scans over the
-	/// tape, so every handler is cheap enough to run inline on the async runtime.
-	pub async fn serve(self, port: u16) {
+	/// Bound separately from [`Viz::serve_on`] so a caller that records and serves concurrently can
+	/// hold an open port — and print its URL — before it starts the work the server describes.
+	pub async fn bind(port: u16) -> tokio::net::TcpListener {
+		let addr = SocketAddr::from(([127, 0, 0, 1], port));
+		tokio::net::TcpListener::bind(addr).await.unwrap_or_else(|e| panic!("bind {addr}: {e}"))
+	}
+
+	/// Serves the UI until the future is dropped. Cursor ops are plain scans over the tape, so every
+	/// handler is cheap enough to run inline on the async runtime.
+	pub async fn serve_on(self, listener: tokio::net::TcpListener) {
 		// Dev study tool relaunched constantly: `no-store` everywhere so a cached asset can't
 		// silently break against a new API shape. All payloads here are small.
 		let no_store = SetResponseHeaderLayer::overriding(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -37,15 +44,12 @@ impl Viz {
 			.route("/api/step_until", post(step_until))
 			.route("/api/step_until_change", post(step_until_change))
 			.route("/lwc_draw.js", get(lwc_draw))
-			.layer(no_store)
 			.nest_service("/wasm", ServeDir::new(web.join("wasm")))
 			.nest_service("/assets", ServeDir::new(web.join("assets")))
 			.fallback(index)
+			.layer(no_store)
 			.with_state(self);
 
-		let addr = SocketAddr::from(([127, 0, 0, 1], port));
-		let listener = tokio::net::TcpListener::bind(addr).await.unwrap_or_else(|e| panic!("bind {addr}: {e}"));
-		println!("exec_viz: http://{addr}/");
 		axum::serve(listener, app).await.expect("axum serve");
 	}
 }
@@ -64,8 +68,11 @@ async fn day(State(v): State<Viz>) -> impl IntoResponse {
 	Json(v.lock().day())
 }
 
+/// `step(0)` rather than a bare read: under a live feed the ring evicts out from under a parked
+/// cursor, and only a cursor op re-bounds it. A raw frame there is blank, and nothing would move it
+/// again until the next keypress.
 async fn status(State(v): State<Viz>) -> impl IntoResponse {
-	Json(v.lock().frame())
+	Json(v.lock().step(0))
 }
 
 async fn step(State(v): State<Viz>, Json(req): Json<StepReq>) -> impl IntoResponse {
