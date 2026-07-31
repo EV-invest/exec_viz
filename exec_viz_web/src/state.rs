@@ -81,8 +81,7 @@ pub async fn step_until_change() {
 async fn until_recorded<F, Fut>(key: &str, op: F)
 where
 	F: Fn() -> Fut,
-	Fut: Future<Output = Result<ActivationFrame, String>>,
-{
+	Fut: Future<Output = Result<ActivationFrame, String>>, {
 	let generation = *GENERATION.peek() + 1;
 	*GENERATION.write() = generation;
 	*WAITING.write() = Some(key.to_string());
