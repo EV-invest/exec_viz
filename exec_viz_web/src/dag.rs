@@ -51,11 +51,15 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	let mut level: HashMap<String, usize> = HashMap::new();
 	let mut cols: Vec<Vec<TopoNode>> = Vec::new();
 	for n in &topology {
-		for d in &n.deps {
-			assert!(!gate_set.contains(d), "a gate is drawn on its host card, not as a peer: {d}");
-		}
 		let at = |x: &String| *level.get(src_of.get(x.as_str()).map_or(x.as_str(), |s| *s)).expect("topo order: dep precedes node");
-		let l = n.deps.iter().map(|d| at(d) + 1).chain(n.gates.iter().map(&at)).max().unwrap_or(0);
+		let l = n
+			.deps
+			.iter()
+			.filter(|d| !n.gates.contains(d))
+			.map(|d| at(d) + 1)
+			.chain(n.gates.iter().map(&at))
+			.max()
+			.unwrap_or(0);
 		level.insert(n.node.clone(), l);
 		if gate_set.contains(&n.node) || hist.values().any(|(b, _)| *b == n.node) {
 			continue; // gates and buffers dock onto a card, they are not peer cards

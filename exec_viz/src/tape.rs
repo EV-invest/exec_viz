@@ -85,16 +85,19 @@ impl Viz {
 }
 
 impl Observer for Viz {
-	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [&'static str], fire: Fire<'_>) {
+	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [bool], fire: Fire<'_>) {
 		let mut t = self.lock();
 		let i = t.idx;
 		t.idx += 1;
 		if t.topology.len() == i {
+			// names rather than the positional flags: on the wire `gates` is a subset of `deps`, which is
+			// what both readers test membership against.
+			let gates: Vec<String> = deps.iter().zip(gates).filter(|(_, g)| **g).map(|(d, _)| trim(d)).collect();
 			let deps: Vec<String> = deps.iter().map(|d| buffered(&trim(d), &t.topology)).collect();
 			let node = TopoNode {
 				node: trim(node),
 				deps,
-				gates: gates.iter().map(|g| trim(g)).collect(),
+				gates,
 				dims: fire.dims.to_vec(),
 				plots: fire.plots.iter().map(PlotOut::from).collect(),
 			};

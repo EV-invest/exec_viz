@@ -163,7 +163,7 @@ function addIndicatorPanes(chart, data, st) {
   // shares that depth rather than sitting one before it. Same rule both sides, or a gated node
   // pane-hops relative to where the panel puts it.
   for (const s of series) {
-    const up = [...s.deps.map((d) => dep(d) + 1), ...s.gates.map(dep)];
+    const up = [...s.deps.filter((d) => !s.gates.includes(d)).map((d) => dep(d) + 1), ...s.gates.map(dep)];
     depth.set(s.node, up.length ? Math.max(...up) : 0);
   }
   const len = (s) => s.dims.reduce((a, b) => a * b, 1);
