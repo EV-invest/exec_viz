@@ -204,7 +204,7 @@ function addIndicatorPanes(chart, data, st) {
         ],
         pane, null);
       let guideHost = null;
-      if (n > 1) {
+      if (s.plot.bars) {
         // stacked histogram: per-point cumulative segments, largest drawn first so each later
         // (smaller) one paints on top; l·c darken with the segment's own weight.
         const segs = Array.from({ length: n }, () => []);
@@ -225,10 +225,12 @@ function addIndicatorPanes(chart, data, st) {
           guideHost = h;
         }
       } else {
-        const line = chart.addSeries(LineSeries, { ...opts, color: oklch(ink(s, 0), hue(s, 0)), lineWidth: 1 }, pane);
-        line.setData(s.points.filter((p) => Number.isFinite(val(s, p, 0))).map((p) => ({ time: p.ts_ms / 1000, value: val(s, p, 0) })));
-        st.series.push(line);
-        guideHost = line;
+        for (let k = 0; k < n; k++) {
+          const line = chart.addSeries(LineSeries, { ...opts, color: oklch(ink(s, k), hue(s, k)), lineWidth: 1 }, pane);
+          line.setData(s.points.filter((p) => Number.isFinite(val(s, p, k))).map((p) => ({ time: p.ts_ms / 1000, value: val(s, p, k) })));
+          st.series.push(line);
+          guideHost = line;
+        }
       }
       for (const g of s.plot.guides) {
         guideHost.createPriceLine({ price: g.value, color: oklch(g.ink, hue(s, 0)), lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: false, title: g.label });

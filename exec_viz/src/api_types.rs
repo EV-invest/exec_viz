@@ -43,6 +43,7 @@ pub struct PlotOut {
 	pub labels: Vec<String>,
 	pub inks: Vec<InkOut>,
 	pub overlay: bool,
+	pub bars: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
