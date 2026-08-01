@@ -153,7 +153,13 @@ function teardown(chart) {
 function addIndicatorPanes(chart, data, st) {
   const series = data.series ?? [];
   const depth = new Map();
-  for (const s of series) depth.set(s.node, s.deps.length ? 1 + Math.max(...s.deps.map((d) => depth.get(d))) : 0);
+  // the server contracts hidden nodes out of `deps`, so every name resolves; a miss would otherwise
+  // go `undefined` → NaN → silently dropped by the `>= 1` filter below, taking its consumers with it.
+  const dep = (d) => {
+    if (!depth.has(d)) throw new Error(`series dep "${d}" is not a drawn node`);
+    return depth.get(d);
+  };
+  for (const s of series) depth.set(s.node, s.deps.length ? 1 + Math.max(...s.deps.map(dep)) : 0);
   const len = (s) => s.dims.reduce((a, b) => a * b, 1);
   // One drawable per plot, not per node: scale is what shares an axis, so a node whose out mixes
   // units (a quantity next to a price) draws as several, each picking its own `slots` of `vals`.

@@ -174,12 +174,13 @@ html, body, #main {
   cursor: pointer;
 }
 
-/* Full-content hover panel: nested in the card so hovering the panel keeps :hover alive (scroll). */
+/* Full-content hover panel. Click-through, so it never steals the hover from the cards it covers. */
 .dag-tip {
   position: absolute;
   top: 100%;
   right: 0;
   z-index: 20;
+  pointer-events: none;
   margin-top: 4px;
   padding: 8px 10px;
   max-width: 640px;
@@ -305,6 +306,12 @@ html, body, #main {
   display: flex;
   gap: 2px;
   margin-left: auto;
+}
+
+/* The tip lives inside its host, and `opacity` both fades descendants and traps them in a stacking
+   context — so the host that is showing a tip must be fully opaque. */
+.dag-card:hover, .dag-gate:hover, .dag-hist:hover {
+  opacity: 1;
 }
 
 .btn.off {

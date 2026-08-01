@@ -6,7 +6,7 @@
 //! chart draws is downsampled online and never dropped.
 
 use std::{
-	collections::VecDeque,
+	collections::{HashMap, VecDeque},
 	sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -178,11 +178,26 @@ impl Tape {
 	}
 
 	pub(crate) fn day(&self) -> DayOut {
+		// A buffer's series is its source's, element for element — charting it would draw every
+		// buffered pane twice. Consumers' deps are rerouted onto the source, so the client's depth
+		// pass ranks a graph whose every name it can resolve.
+		let src_of: HashMap<&str, &str> = self
+			.series
+			.iter()
+			.filter(|s| s.node.starts_with("Buffer<"))
+			.map(|s| (s.node.as_str(), s.deps.first().expect("a buffer has one dep").as_str()))
+			.collect();
 		DayOut {
 			bars: self.bars.clone(),
-			// A buffer's series is its source's, element for element — charting it would draw every
-			// buffered pane twice.
-			series: self.series.iter().filter(|s| !s.node.starts_with("Buffer<")).cloned().collect(),
+			series: self
+				.series
+				.iter()
+				.filter(|s| !src_of.contains_key(s.node.as_str()))
+				.map(|s| SeriesOut {
+					deps: s.deps.iter().map(|d| src_of.get(d.as_str()).map_or(d.as_str(), |s| *s).to_string()).collect(),
+					..s.clone()
+				})
+				.collect(),
 			price_node: self.price_node.clone(),
 		}
 	}
@@ -342,19 +357,34 @@ fn buffered(dep: &str, topology: &[TopoNode]) -> String {
 		.clone()
 }
 
-/// Generics-aware last-`::`-segment: `nodes::Rsi<14>` → `Rsi<14>` (path segments inside `<>`
-/// are left as-is). `type_name` strings are build-local, display-only.
+/// Drops module paths at every depth, so a card reads as the types it names:
+/// `Buffer<spl::nodes::Bar1m, dag::Horizon::Span(v_utils::primitives::timeframe::Timeframe(180000))>`
+/// → `Buffer<Bar1m, Horizon::Span(Timeframe(180000))>`. A segment is a module iff it starts
+/// lowercase — Rust's own convention, and the only thing telling `nodes::` from `Horizon::`, whose
+/// variant would otherwise be stranded as a bare `Span(..)`. `type_name` strings are build-local,
+/// display-only.
 fn trim(name: &str) -> String {
-	let mut depth = 0u32;
-	let mut start = 0;
-	let b = name.as_bytes();
-	for i in 0..b.len() {
-		match b[i] {
-			b'<' => depth += 1,
-			b'>' => depth -= 1,
-			b':' if depth == 0 && b.get(i + 1) == Some(&b':') => start = i + 2,
-			_ => {}
+	let mut out = String::with_capacity(name.len());
+	// Start of the segment being accumulated: `::` rewinds to it when what precedes is a module.
+	let mut seg = 0;
+	let mut rest = name;
+	while let Some(c) = rest.chars().next() {
+		if let Some(after) = rest.strip_prefix("::") {
+			match out[seg..].starts_with(|c: char| c.is_lowercase() || c == '_') {
+				true => out.truncate(seg),
+				false => {
+					out.push_str("::");
+					seg = out.len();
+				}
+			}
+			rest = after;
+			continue;
 		}
+		out.push(c);
+		if !(c.is_alphanumeric() || c == '_') {
+			seg = out.len();
+		}
+		rest = &rest[c.len_utf8()..];
 	}
-	name[start..].to_string()
+	out
 }
