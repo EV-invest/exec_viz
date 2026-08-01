@@ -21,9 +21,6 @@ pub static ERROR: GlobalSignal<Option<String>> = Signal::global(|| None);
 pub static SELECTED: GlobalSignal<HashSet<String>> = Signal::global(HashSet::new);
 /// Key of the control whose op outran the recording and is re-issuing itself.
 pub static WAITING: GlobalSignal<Option<String>> = Signal::global(|| None);
-/// Bumped by each retrying op, so a newer one supersedes an older one's loop.
-static GENERATION: GlobalSignal<u64> = Signal::global(|| 0);
-
 /// Empty until the recording's first tick closes: the server withholds a half-built topology, and
 /// the resource stays `None` (= "loading…") until there is a whole one.
 pub async fn fetch_topology() -> Result<Vec<TopoNode>, String> {
@@ -35,37 +32,30 @@ pub async fn fetch_topology() -> Result<Vec<TopoNode>, String> {
 		gloo_timers::future::TimeoutFuture::new(100).await;
 	}
 }
-
 /// Raw `/api/day` body — never parsed by Rust, handed straight to the chart shim.
 pub async fn fetch_day() -> Result<String, String> {
 	let resp = Request::get("/api/day").send().await.map_err(|e| e.to_string())?;
 	let text = resp.text().await.map_err(|e| e.to_string())?;
 	if resp.ok() { Ok(text) } else { Err(text) }
 }
-
 pub async fn refresh_status() {
 	apply(get_json("/api/status").await);
 }
-
 /// Free-run's stepper: takes whatever the tape has. Sitting at the head while playing is the feed
 /// pacing us, not a wait, so `pending` is ignored and no control is marked.
 pub async fn step(n: usize) {
 	apply(post_json("/api/step", &StepReq { n }).await);
 }
-
 pub async fn step_one() {
 	until_recorded("step", || async { post_json("/api/step", &StepReq { n: 1 }).await }).await;
 }
-
 pub async fn seek(tick: usize) {
 	until_recorded("seek", || async move { post_json("/api/seek", &SeekReq { tick }).await }).await;
 }
-
 pub async fn step_until(node: &str) {
 	let node = node.to_string();
 	until_recorded(&node, || async { post_json("/api/step_until", &StepUntilReq { node: node.clone() }).await }).await;
 }
-
 /// Skip to the next change in any selected node. No selection ⇒ no-op.
 pub async fn step_until_change() {
 	let nodes: Vec<String> = SELECTED.peek().iter().cloned().collect();
@@ -74,6 +64,26 @@ pub async fn step_until_change() {
 	}
 	until_recorded("change", || async { post_json("/api/step_until_change", &StepUntilChangeReq { nodes: nodes.clone() }).await }).await;
 }
+pub fn toggle_select(node: &str) {
+	let mut sel = SELECTED.write();
+	if !sel.remove(node) {
+		sel.insert(node.to_string());
+	}
+}
+pub fn toggle_play() {
+	let v = *PLAYING.peek();
+	*PLAYING.write() = !v;
+}
+pub fn speed_up() {
+	let v = *SPEED.peek();
+	*SPEED.write() = (v * 2).min(1 << 16);
+}
+pub fn speed_down() {
+	let v = *SPEED.peek();
+	*SPEED.write() = (v / 2).max(1);
+}
+/// Bumped by each retrying op, so a newer one supersedes an older one's loop.
+static GENERATION: GlobalSignal<u64> = Signal::global(|| 0);
 
 /// Re-issues `op` every 100ms while the tape cannot yet satisfy it, holding `key` in [`WAITING`].
 /// Re-issuing is what makes this correct without server-side state: `seek` is absolute, a scan
@@ -100,28 +110,6 @@ where
 		gloo_timers::future::TimeoutFuture::new(100).await;
 	}
 	*WAITING.write() = None;
-}
-
-pub fn toggle_select(node: &str) {
-	let mut sel = SELECTED.write();
-	if !sel.remove(node) {
-		sel.insert(node.to_string());
-	}
-}
-
-pub fn toggle_play() {
-	let v = *PLAYING.peek();
-	*PLAYING.write() = !v;
-}
-
-pub fn speed_up() {
-	let v = *SPEED.peek();
-	*SPEED.write() = (v * 2).min(1 << 16);
-}
-
-pub fn speed_down() {
-	let v = *SPEED.peek();
-	*SPEED.write() = (v / 2).max(1);
 }
 
 fn apply(res: Result<ActivationFrame, String>) {
