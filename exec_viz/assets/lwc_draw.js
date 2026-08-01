@@ -159,7 +159,13 @@ function addIndicatorPanes(chart, data, st) {
     if (!depth.has(d)) throw new Error(`series dep "${d}" is not a drawn node`);
     return depth.get(d);
   };
-  for (const s of series) depth.set(s.node, s.deps.length ? 1 + Math.max(...s.deps.map(dep)) : 0);
+  // A gate is an upstream edge too, and the DAG panel draws it on its consumer's card, so it
+  // shares that depth rather than sitting one before it. Same rule both sides, or a gated node
+  // pane-hops relative to where the panel puts it.
+  for (const s of series) {
+    const up = [...s.deps.map((d) => dep(d) + 1), ...s.gates.map(dep)];
+    depth.set(s.node, up.length ? Math.max(...up) : 0);
+  }
   const len = (s) => s.dims.reduce((a, b) => a * b, 1);
   // One drawable per plot, not per node: scale is what shares an axis, so a node whose out mixes
   // units (a quantity next to a price) draws as several, each picking its own `slots` of `vals`.

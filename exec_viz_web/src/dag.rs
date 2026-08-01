@@ -42,21 +42,20 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	// a dep naming a buffer resolves to the *series* card, which is where the buffer is drawn
 	let src_of: HashMap<&str, &str> = hist.iter().map(|(src, (buf, _))| (buf.as_str(), src.as_str())).collect();
 
-	// `level(node) = 1 + max(level(deps))`, roots 0, over the *drawn* graph: a hidden node must not
-	// consume a column, or its consumers sit one right of the card they visibly depend on. One pass
-	// works because the server sends nodes in step (= topo) order.
+	// `level(node) = max(1 + level(deps), level(gates))`, roots 0, over the *drawn* graph: a hidden
+	// node must not consume a column, or its consumers sit one right of the card they visibly
+	// depend on. A gate is an upstream edge — a node reading nothing but gated on a deep one
+	// belongs after that gate's inputs, not beside the roots — and it is drawn *on* this card, so
+	// it contributes its own level rather than one past it. One pass works because the server sends
+	// nodes in step (= topo) order.
 	let mut level: HashMap<String, usize> = HashMap::new();
 	let mut cols: Vec<Vec<TopoNode>> = Vec::new();
 	for n in &topology {
-		let l = n
-			.deps
-			.iter()
-			.map(|d| {
-				assert!(!gate_set.contains(d), "a gate is drawn on its host card, not as a peer: {d}");
-				level.get(src_of.get(d.as_str()).map_or(d.as_str(), |s| *s)).expect("topo order: dep precedes node") + 1
-			})
-			.max()
-			.unwrap_or(0);
+		for d in &n.deps {
+			assert!(!gate_set.contains(d), "a gate is drawn on its host card, not as a peer: {d}");
+		}
+		let at = |x: &String| *level.get(src_of.get(x.as_str()).map_or(x.as_str(), |s| *s)).expect("topo order: dep precedes node");
+		let l = n.deps.iter().map(|d| at(d) + 1).chain(n.gates.iter().map(&at)).max().unwrap_or(0);
 		level.insert(n.node.clone(), l);
 		if gate_set.contains(&n.node) || hist.values().any(|(b, _)| *b == n.node) {
 			continue; // gates and buffers dock onto a card, they are not peer cards
