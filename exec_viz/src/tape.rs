@@ -55,7 +55,16 @@ impl Viz {
 
 	/// A closed price bar for the chart's candle pane.
 	pub fn bar(&self, bar: BarOut) {
-		self.lock().bars.push(bar);
+		let mut t = self.lock();
+		// The chart drops every series it holds — silently, in a production build — over one
+		// non-ascending point, so a re-sent bar has to be loud here instead.
+		assert!(
+			t.bars.last().is_none_or(|b| b.ts_ms < bar.ts_ms),
+			"bars must arrive closed and in order: {} after {}",
+			bar.ts_ms,
+			t.bars.last().expect("checked").ts_ms
+		);
+		t.bars.push(bar);
 	}
 
 	/// Ends the recording: the tick `at` opened last becomes addressable and `total` stops growing.
@@ -102,7 +111,10 @@ impl Observer for Viz {
 			let ms = t.ts_ns / 1_000_000;
 			let bucket = ms - ms.rem_euclid(t.bucket_ms);
 			match t.series[i].points.last_mut() {
-				Some(p) if p.ts_ms == bucket => p.vals = vals.to_vec(),
+				// `>=`, not `==`: a feed's timestamps do go backwards (a coarse lane landing on an exact
+				// hour boundary weaves ahead of the tape around it), and one non-ascending point makes
+				// lightweight-charts drop *every* series it holds.
+				Some(p) if p.ts_ms >= bucket => p.vals = vals.to_vec(),
 				_ => t.series[i].points.push(PointOut { ts_ms: bucket, vals: vals.to_vec() }),
 			}
 		}
@@ -355,6 +367,42 @@ fn buffered(dep: &str, topology: &[TopoNode]) -> String {
 		.find(|n| n.starts_with(&prefix))
 		.unwrap_or_else(|| panic!("{dep} has no `Buffer<{series}, _>` ahead of it in the graph"))
 		.clone()
+}
+
+#[cfg(test)]
+mod tests {
+	use trading_data_dag::Plot;
+
+	use super::*;
+
+	fn fire(vals: &[f64]) -> Fire<'_> {
+		Fire {
+			debug: &"",
+			glance: &f64::NAN,
+			dims: &[1],
+			plots: &[Plot::DEFAULT],
+			fires: 1,
+			vals: Some(vals),
+			dep_dims: &[],
+			jac: None,
+			exact_jac: None,
+			formula: None,
+			deriv: None,
+			trace: None,
+		}
+	}
+
+	#[test]
+	fn a_backwards_tick_leaves_the_series_ascending() {
+		let mut viz = Viz::new(None, 8, 60_000);
+		for min in [2, 3, 2, 4] {
+			let ts_ns = min * 60 * 1_000_000_000;
+			viz.at(ts_ns).on("N", &[], &[], fire(&[min as f64]));
+		}
+		let day = viz.lock().day();
+		let ts: Vec<i64> = day.series[0].points.iter().map(|p| p.ts_ms).collect();
+		assert!(ts.windows(2).all(|w| w[0] < w[1]), "{ts:?}");
+	}
 }
 
 /// Drops module paths at every depth, so a card reads as the types it names:
