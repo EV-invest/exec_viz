@@ -68,11 +68,8 @@ async fn day(State(v): State<Viz>) -> impl IntoResponse {
 	Json(v.lock().day())
 }
 
-/// `step(0)` rather than a bare read: under a live feed the ring evicts out from under a parked
-/// cursor, and only a cursor op re-bounds it. A raw frame there is blank, and nothing would move it
-/// again until the next keypress.
 async fn status(State(v): State<Viz>) -> impl IntoResponse {
-	Json(v.lock().step(0))
+	Json(v.lock().frame())
 }
 
 async fn step(State(v): State<Viz>, Json(req): Json<StepReq>) -> impl IntoResponse {

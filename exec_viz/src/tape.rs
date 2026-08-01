@@ -2,8 +2,9 @@
 //! shared read side the server scrubs. Cloning shares the tape.
 //!
 //! Live-first, so the recording *is* the storage: a live run can't be re-run, which is what the
-//! old replay-by-rewinding-the-graph model assumed. Ticks land in a ring; the per-node series the
-//! chart draws is downsampled online and never dropped.
+//! old replay-by-rewinding-the-graph model assumed. Ticks land in a bounded buffer that thins with
+//! age rather than forgetting its front; the per-node series the chart draws is downsampled online
+//! and never dropped.
 
 use std::{
 	collections::{HashMap, VecDeque},
@@ -19,18 +20,19 @@ pub struct Viz(Arc<Mutex<Tape>>);
 
 impl Viz {
 	/// `price_node` backs the candles and is skipped in the indicator panes; `None` = no price
-	/// pane. `capacity` is the retained tick count, `bucket_ms` the chart's sample period.
+	/// pane. `capacity` bounds the retained tick count — see [`Tape::thin`] for what a run longer
+	/// than that keeps — and `bucket_ms` is the chart's sample period.
 	pub fn new(price_node: Option<&str>, capacity: usize, bucket_ms: i64) -> Self {
-		assert!(capacity > 0 && bucket_ms > 0);
+		assert!(capacity > 3 && bucket_ms > 0);
 		Self(Arc::new(Mutex::new(Tape {
 			price_node: price_node.map(str::to_string),
 			capacity,
 			bucket_ms,
 			topology: Vec::new(),
 			ticks: VecDeque::new(),
-			base: 0,
+			opened: 0,
+			stride: 1,
 			sealed: false,
-			last_fired: Vec::new(),
 			series: Vec::new(),
 			bars: Vec::new(),
 			cursor: 0,
@@ -45,10 +47,12 @@ impl Viz {
 		t.ts_ns = ts_ns;
 		t.idx = 0;
 		if t.ticks.len() == t.capacity {
-			t.ticks.pop_front();
-			t.base += 1;
+			t.thin();
 		}
-		t.ticks.push_back(Tick { ts_ns, acts: Vec::new() });
+		debug_assert!(t.ticks.len() < t.capacity);
+		let abs = t.opened;
+		t.opened += 1;
+		t.ticks.push_back(Tick { abs, ts_ns, acts: Vec::new() });
 		drop(t);
 		self
 	}
@@ -119,19 +123,11 @@ impl Observer for Viz {
 			}
 		}
 
-		if t.last_fired.len() == i {
-			t.last_fired.push(None);
-		}
-		if fire.vals.is_some() {
-			let tick = t.total() - 1;
-			t.last_fired[i] = Some(tick);
-		}
 		let act = Act {
 			out: format!("{}", fire.glance),
 			detail: clip(&format!("{:?}", fire.debug)),
 			vals: fire.vals.map(<[f64]>::to_vec),
 			jac: fire.jac.map(<[f64]>::to_vec),
-			last_fired: t.last_fired[i],
 		};
 		t.ticks.back_mut().expect("`Viz::at` opens the tick before the graph steps").acts.push(act);
 	}
@@ -143,12 +139,11 @@ struct Act {
 	detail: String,
 	vals: Option<Vec<f64>>,
 	jac: Option<Vec<f64>>,
-	/// Absolute tick of this node's latest fire as of *this* tick (`Some(self)` when it fired), so
-	/// a scrubbed frame carries forward the value that was standing then, not the live one.
-	last_fired: Option<usize>,
 }
 
 struct Tick {
+	/// Index among *all* ticks ever opened, so a tick's id survives every thinning pass.
+	abs: usize,
 	ts_ns: i64,
 	acts: Vec<Act>,
 }
@@ -158,18 +153,18 @@ pub(crate) struct Tape {
 	capacity: usize,
 	bucket_ms: i64,
 	topology: Vec<TopoNode>,
-	/// ponytail: fixed-capacity ring — scrollback ends at `base`. Persist ticks to disk if a
-	/// full-day-plus scrub ever matters.
+	/// Ascending by `abs`, fewer than `capacity` of them — see [`Tape::thin`].
 	ticks: VecDeque<Tick>,
-	/// Absolute index of `ticks[0]`; grows as the ring evicts, so tick numbers stay stable.
-	base: usize,
+	/// Ticks ever opened, thinned-away ones included.
+	opened: usize,
+	/// Spacing of the retained ticks outside the whole-kept tail; a power of two.
+	stride: usize,
 	/// The recording is over — see [`Tape::head`].
 	sealed: bool,
-	/// Per node (step index): absolute tick of its latest fire, stamped into each `Act`.
-	last_fired: Vec<Option<usize>>,
 	series: Vec<SeriesOut>,
 	bars: Vec<BarOut>,
-	/// Ticks consumed; the frame describes the one that consumed `cursor - 1`.
+	/// Ticks consumed; the frame describes the one that consumed `cursor - 1`. Absolute, so a
+	/// thinning pass under a parked cursor cannot slide it.
 	cursor: usize,
 	ts_ns: i64,
 	/// Per-tick step counter: step order is identical every tick, so it doubles as node id.
@@ -177,10 +172,45 @@ pub(crate) struct Tape {
 }
 
 impl Tape {
+	/// What the buffer keeps: the newest `capacity / 2` ticks whole, plus every `stride`-th tick over
+	/// everything before them. So the freshest stretch is still tick-exact while the run stays
+	/// walkable end to end — dropping the front instead, as a plain ring does, makes the beginning
+	/// of a long recording unreachable for the rest of the run.
+	///
+	/// `stride` only ever doubles, so each pass keeps a subset of what the last one did, and each
+	/// leaves a quarter of the buffer free — one O(capacity) pass per `capacity / 4` ticks.
+	fn thin(&mut self) {
+		while self.opened / self.stride > self.capacity / 4 {
+			self.stride *= 2;
+		}
+		let whole = self.opened.saturating_sub(self.capacity / 2);
+		let stride = self.stride;
+		self.ticks.retain(|t| t.abs >= whole || t.abs % stride == 0);
+	}
+
 	/// Last addressable cursor. `at` opens a tick before the graph sweeps it, so until the recording
 	/// is sealed the newest tick is still being written and is not a frame anyone may see.
 	fn head(&self) -> usize {
-		if self.sealed { self.total() } else { self.total().saturating_sub(1) }
+		if self.sealed { self.opened } else { self.opened.saturating_sub(1) }
+	}
+
+	/// Last addressable *position*, `None` while the newest tick is the only one and still open.
+	fn last(&self) -> Option<usize> {
+		let n = if self.sealed { self.ticks.len() } else { self.ticks.len().saturating_sub(1) };
+		n.checked_sub(1)
+	}
+
+	/// Position the cursor names — the nearest retained tick at or below it, since thinning drops
+	/// ticks out from under a parked cursor.
+	fn pos(&self) -> Option<usize> {
+		let last = self.last()?;
+		Some(self.ticks.partition_point(|t| t.abs < self.cursor).saturating_sub(1).min(last))
+	}
+
+	/// Parks the cursor on retained position `p`, clamped to what is addressable.
+	fn park(&mut self, p: usize) {
+		let Some(last) = self.last() else { return };
+		self.cursor = self.ticks[p.min(last)].abs + 1;
 	}
 
 	/// Empty until the first tick closes: `Observer::on` grows this one node at a time *within* a
@@ -215,21 +245,21 @@ impl Tape {
 	}
 
 	pub(crate) fn frame(&self) -> ActivationFrame {
-		let tick = self.cursor.checked_sub(1).and_then(|i| i.checked_sub(self.base)).and_then(|i| self.ticks.get(i));
+		let tick = self.pos().map(|p| (p, &self.ticks[p]));
 		ActivationFrame {
-			tick: self.cursor,
+			tick: tick.map_or(0, |(_, t)| t.abs + 1),
 			total: self.head(),
 			sealed: self.sealed,
 			pending: false,
-			ts_ns: tick.map_or(0, |t| t.ts_ns),
-			activations: tick.map_or_else(Vec::new, |t| {
+			ts_ns: tick.map_or(0, |(_, t)| t.ts_ns),
+			activations: tick.map_or_else(Vec::new, |(p, t)| {
 				t.acts
 					.iter()
 					.zip(&self.topology)
 					.enumerate()
 					.map(|(i, (a, n))| {
 						// A quiet node still holds its last value: show it, `fired` is what says it's live.
-						let held = if a.vals.is_some() { a } else { self.held(i, a.last_fired).unwrap_or(a) };
+						let held = if a.vals.is_some() { a } else { self.held(i, p).unwrap_or(a) };
 						Activation {
 							node: n.node.clone(),
 							deps: n.deps.clone(),
@@ -247,32 +277,30 @@ impl Tape {
 		}
 	}
 
-	/// Node `i`'s act on the tick it last fired; `None` once that tick has been evicted.
-	fn held(&self, i: usize, last_fired: Option<usize>) -> Option<&Act> {
-		let act = self.ticks.get(last_fired?.checked_sub(self.base)?)?.acts.get(i)?;
-		assert!(act.vals.is_some(), "`last_fired` points at a tick where the node fired");
-		Some(act)
+	/// Node `i`'s newest act at or before position `p` that fired; `None` if it never has. Searched
+	/// rather than stamped, so what a scrubbed frame carries forward is a value the tape can still
+	/// show — a remembered tick number would outlive the tick a thinning pass dropped.
+	/// ponytail: linear scan, bounded by `capacity`; index the fires per node if a frame ever costs
+	/// enough to feel.
+	fn held(&self, i: usize, p: usize) -> Option<&Act> {
+		self.ticks.iter().take(p + 1).rev().find_map(|t| t.acts.get(i).filter(|a| a.vals.is_some()))
 	}
 
+	/// `n` retained ticks on, not `n` absolute ones: in a thinned stretch the ticks between two
+	/// retained ones are gone, and stepping over them would stall the cursor instead of moving it.
 	pub(crate) fn step(&mut self, n: usize) -> ActivationFrame {
-		let target = self.cursor.saturating_add(n);
-		self.cursor = self.bound(target);
+		let target = self.pos().map_or(0, |p| p.saturating_add(n));
+		self.park(target);
 		let mut f = self.frame();
-		f.pending = !self.sealed && target > self.head();
+		f.pending = !self.sealed && self.last().is_none_or(|l| target > l);
 		f
 	}
 
 	pub(crate) fn seek(&mut self, tick: usize) -> ActivationFrame {
-		self.cursor = self.bound(tick);
+		self.park(self.ticks.partition_point(|t| t.abs < tick).saturating_sub(1));
 		let mut f = self.frame();
 		f.pending = !self.sealed && tick > self.head();
 		f
-	}
-
-	/// `base` itself is not a cursor: `frame` describes the tick *before* the cursor, so the oldest
-	/// one still in the ring is reached at `base + 1`.
-	fn bound(&self, tick: usize) -> usize {
-		tick.clamp((self.base + 1).min(self.head()), self.head())
 	}
 
 	/// Advance until `node` (trimmed name) fires, or the recording ends.
@@ -300,22 +328,20 @@ impl Tape {
 	}
 
 	fn scan(&mut self, hit: impl Fn(&Tick) -> bool) -> ActivationFrame {
-		self.cursor = self.bound(self.cursor);
 		let mut found = false;
-		while self.cursor < self.head() {
-			self.cursor += 1;
-			if hit(&self.ticks[self.cursor - 1 - self.base]) {
-				found = true;
-				break;
+		if let (Some(mut p), Some(last)) = (self.pos(), self.last()) {
+			while p < last {
+				p += 1;
+				if hit(&self.ticks[p]) {
+					found = true;
+					break;
+				}
 			}
+			self.park(p);
 		}
 		let mut f = self.frame();
 		f.pending = !self.sealed && !found;
 		f
-	}
-
-	fn total(&self) -> usize {
-		self.base + self.ticks.len()
 	}
 }
 
@@ -403,6 +429,31 @@ mod tests {
 		let day = viz.lock().day();
 		let ts: Vec<i64> = day.series[0].points.iter().map(|p| p.ts_ms).collect();
 		assert!(ts.windows(2).all(|w| w[0] < w[1]), "{ts:?}");
+	}
+
+	/// A run many times the capacity is still walkable end to end — the bug this replaced dropped the
+	/// buffer's front, which left `seek(0)` landing wherever eviction happened to have reached.
+	#[test]
+	fn the_whole_run_stays_walkable_past_the_capacity() {
+		let mut viz = Viz::new(None, 64, 60_000);
+		for i in 0..5000 {
+			viz.at(i * 60 * 1_000_000_000).on("N", &[], &[], fire(&[i as f64]));
+		}
+		viz.clone().seal();
+		let mut t = viz.lock();
+		assert_eq!(t.seek(0).tick, 1, "the recording's first tick is addressable");
+		let mut walk = vec![t.frame().tick];
+		loop {
+			let tick = t.step(1).tick;
+			if tick == *walk.last().expect("seeded") {
+				break;
+			}
+			walk.push(tick);
+		}
+		assert_eq!(*walk.last().expect("seeded"), 5000, "and so is its last: {walk:?}");
+		assert!(walk.windows(2).all(|w| w[0] < w[1]), "no step stands still: {walk:?}");
+		// The freshest stretch is kept whole, so stepping through it moves one tick at a time.
+		assert!(walk.windows(2).rev().take(8).all(|w| w[1] - w[0] == 1), "{walk:?}");
 	}
 }
 
