@@ -1,7 +1,16 @@
 [package]
 name = "exec_viz"
-version = "0.1.0"
-edition = "2024"
+description = "Tick-by-tick replay of a trading_data computation DAG: a recording Observer, a scrubbable tape, and an axum server the browser front-end drives"
+documentation = "https://docs.rs/exec_viz"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+# Relative to this package dir; the README is the workspace's.
+readme = "../README.md"
+keywords.workspace = true
+categories.workspace = true
 
 [features]
 default = ["server"]

@@ -1262,10 +1262,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "exec_viz_macros"
-version = "0.1.0"
-
-[[package]]
 name = "exec_viz_web"
 version = "0.1.0"
 dependencies = [

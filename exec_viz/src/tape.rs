@@ -410,6 +410,38 @@ fn buffered(dep: &str, topology: &[TopoNode]) -> String {
 		.clone()
 }
 
+/// Drops module paths at every depth, so a card reads as the types it names:
+/// `Buffer<spl::nodes::Bar1m, dag::Horizon::Span(v_utils::primitives::timeframe::Timeframe(180000))>`
+/// → `Buffer<Bar1m, Horizon::Span(Timeframe(180000))>`. A segment is a module iff it starts
+/// lowercase — Rust's own convention, and the only thing telling `nodes::` from `Horizon::`, whose
+/// variant would otherwise be stranded as a bare `Span(..)`. `type_name` strings are build-local,
+/// display-only.
+fn trim(name: &str) -> String {
+	let mut out = String::with_capacity(name.len());
+	// Start of the segment being accumulated: `::` rewinds to it when what precedes is a module.
+	let mut seg = 0;
+	let mut rest = name;
+	while let Some(c) = rest.chars().next() {
+		if let Some(after) = rest.strip_prefix("::") {
+			match out[seg..].starts_with(|c: char| c.is_lowercase() || c == '_') {
+				true => out.truncate(seg),
+				false => {
+					out.push_str("::");
+					seg = out.len();
+				}
+			}
+			rest = after;
+			continue;
+		}
+		out.push(c);
+		if !(c.is_alphanumeric() || c == '_') {
+			seg = out.len();
+		}
+		rest = &rest[c.len_utf8()..];
+	}
+	out
+}
+
 #[cfg(test)]
 mod tests {
 	use trading_data_dag::Plot;
@@ -469,36 +501,4 @@ mod tests {
 		// The freshest stretch is kept whole, so stepping through it moves one tick at a time.
 		assert!(walk.windows(2).rev().take(8).all(|w| w[1] - w[0] == 1), "{walk:?}");
 	}
-}
-
-/// Drops module paths at every depth, so a card reads as the types it names:
-/// `Buffer<spl::nodes::Bar1m, dag::Horizon::Span(v_utils::primitives::timeframe::Timeframe(180000))>`
-/// → `Buffer<Bar1m, Horizon::Span(Timeframe(180000))>`. A segment is a module iff it starts
-/// lowercase — Rust's own convention, and the only thing telling `nodes::` from `Horizon::`, whose
-/// variant would otherwise be stranded as a bare `Span(..)`. `type_name` strings are build-local,
-/// display-only.
-fn trim(name: &str) -> String {
-	let mut out = String::with_capacity(name.len());
-	// Start of the segment being accumulated: `::` rewinds to it when what precedes is a module.
-	let mut seg = 0;
-	let mut rest = name;
-	while let Some(c) = rest.chars().next() {
-		if let Some(after) = rest.strip_prefix("::") {
-			match out[seg..].starts_with(|c: char| c.is_lowercase() || c == '_') {
-				true => out.truncate(seg),
-				false => {
-					out.push_str("::");
-					seg = out.len();
-				}
-			}
-			rest = after;
-			continue;
-		}
-		out.push(c);
-		if !(c.is_alphanumeric() || c == '_') {
-			seg = out.len();
-		}
-		rest = &rest[c.len_utf8()..];
-	}
-	out
 }
