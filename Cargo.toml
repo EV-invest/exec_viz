@@ -24,7 +24,7 @@ color-eyre = "^0.6.5"
 derive-new = "^0"
 # --- web (Dioxus/wasm) frontend. wasm-bindgen pinned in lockstep with wasm-bindgen-cli (flake) and v_utils. ---
 dioxus = { version = "0.7", features = ["web"] }
-dockviewers_dioxus = "0.1.10"
+dockviewers_dioxus = "0.2"
 exec_viz = { path = "exec_viz", default-features = false }
 exec_viz_macros = { path = "exec_viz_macros" }
 futures = "^0.3"
@@ -48,4 +48,5 @@ web-sys = "0.3"
 # Patches don't propagate across workspaces — re-declared here so the path-dep graph
 # (trading_data → v_utils) and our own v_utils resolve to the same local checkout.
 [patch.crates-io]
+dockviewers_dioxus = { path = "../dockviewers/dockviewers_dioxus" }
 v_utils = { path = "../../v_utils/v_utils" }

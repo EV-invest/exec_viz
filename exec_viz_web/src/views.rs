@@ -197,13 +197,28 @@ pub fn Replay() -> Element {
 			div { class: "dock-host", style: "flex:1 1 auto; min-height:0; position:relative;",
 				PackedArea {
 					panels,
-					on_ready: Some(Callback::new(move |a: PackedApi| {
+					config: Some(dock_config()),
+					on_band: Some(Callback::new(move |a: PackedApi| {
 						api.set(Some(a));
-						seed(a);
+						if !a.restored() {
+							seed(a);
+						}
 					})),
 				}
 			}
 		}
+	}
+}
+
+/// `Alt+S` caches the live arrangement per screen band in this browser, and `on_band` gets it back
+/// on the next load instead of re-seeding. There is nothing to publish anywhere, so no `on_save`.
+fn dock_config() -> Config {
+	Config {
+		storage_key: Some("exec-viz-layout".into()),
+		// Two tiles, one tab each — the bar is pure overhead here, so halve the default and give the
+		// pixels to the chart.
+		title_h_rem: 1.0,
+		..Default::default()
 	}
 }
 
