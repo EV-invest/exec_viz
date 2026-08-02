@@ -24,6 +24,8 @@ pub static WAITING: GlobalSignal<Option<String>> = Signal::global(|| None);
 /// Empty until the recording's first tick closes: the server withholds a half-built topology, and
 /// the resource stays `None` (= "loading…") until there is a whole one.
 pub async fn fetch_topology() -> Result<Vec<TopoNode>, String> {
+	// A page opened ahead of the run has nothing to do but wait; a transport error still exits via `?`.
+	//LOOP: bounded by the feed, not by us — the recording's first tick closes when it closes.
 	loop {
 		let t: Vec<TopoNode> = get_json("/api/topology").await?;
 		if !t.is_empty() {
@@ -100,6 +102,8 @@ where
 	let generation = *GENERATION.peek() + 1;
 	*GENERATION.write() = generation;
 	*WAITING.write() = Some(key.to_string());
+	// Exits on `!pending`, on an error through `apply`, or when a newer op supersedes this one.
+	//LOOP: re-issues until the tape holds the tick asked for — how long that takes is the feed's to say.
 	loop {
 		let res = op().await;
 		// A newer op owns the cursor and `WAITING` now; applying this would jump the cursor back to
