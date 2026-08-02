@@ -45,6 +45,7 @@ impl Viz {
 			.route("/api/step_until", post(step_until))
 			.route("/api/step_until_change", post(step_until_change))
 			.route("/lwc_draw.js", get(lwc_draw))
+			.route("/app.css", get(app_css))
 			.nest_service("/wasm", ServeDir::new(web.join("wasm")))
 			.nest_service("/assets", ServeDir::new(web.join("assets")))
 			.fallback(index)
@@ -112,4 +113,10 @@ async fn index(method: axum::http::Method) -> impl IntoResponse {
 /// (`v_utils::lwc::mount(el, "/lwc_draw.js", …)`).
 async fn lwc_draw() -> impl IntoResponse {
 	([(header::CONTENT_TYPE, HeaderValue::from_static("text/javascript"))], include_str!("../assets/lwc_draw.js"))
+}
+
+/// The front-end's stylesheet, linked from `index.html` so it applies before the wasm boots (see
+/// the comment there).
+async fn app_css() -> impl IntoResponse {
+	([(header::CONTENT_TYPE, HeaderValue::from_static("text/css"))], include_str!("../assets/app.css"))
 }

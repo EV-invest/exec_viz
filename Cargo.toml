@@ -24,6 +24,7 @@ color-eyre = "^0.6.5"
 derive-new = "^0"
 # --- web (Dioxus/wasm) frontend. wasm-bindgen pinned in lockstep with wasm-bindgen-cli (flake) and v_utils. ---
 dioxus = { version = "0.7", features = ["web"] }
+dockviewers_dioxus = "0.1.10"
 exec_viz = { path = "exec_viz", default-features = false }
 exec_viz_macros = { path = "exec_viz_macros" }
 futures = "^0.3"

@@ -1,7 +1,8 @@
-//! The single replay view: status bar, lwc candle chart of the day (with a moving replay
-//! cursor), and the DAG activations panel.
+//! The single replay view: status bar, then the two dock tiles — lwc candle chart of the day (with
+//! a moving replay cursor) and the DAG activations panel — the user can resize, tab and maximize.
 
 use dioxus::prelude::*;
+use dockviewers_dioxus::{Config, DockPanel, Group, GroupId, MinSize, PackedApi, PackedArea, PanelId};
 use exec_viz::api_types::TopoNode;
 use futures::StreamExt as _;
 use wasm_bindgen::{JsCast as _, closure::Closure};
@@ -9,12 +10,52 @@ use wasm_bindgen::{JsCast as _, closure::Closure};
 use crate::{dag, keyboard, state};
 
 const CHART_ID: &str = "exec-chart";
+const CHART_PANEL: &str = "chart";
+const DAG_PANEL: &str = "dag";
 
 #[component]
 pub fn Replay() -> Element {
 	let topology = use_resource(state::fetch_topology);
 	let mut day = use_resource(state::fetch_day);
-	let mut banner = use_signal(|| Option::<String>::None);
+	let banner = use_signal(|| Option::<String>::None);
+	let mut api = use_signal(|| None::<PackedApi>);
+
+	// The panes read their feeds from context: `panels` is built once (the overlay keys by panel id,
+	// so a tile that moves keeps its component — and the chart keeps its JS state).
+	use_context_provider(|| topology);
+	use_context_provider(|| day);
+	use_context_provider(|| banner);
+	// A tile's `+` asks the host for another panel; this view's set is fixed, so the only thing to
+	// offer is whichever of the two was closed.
+	use_context_provider(|| {
+		Callback::new(move |gid: GroupId| {
+			let mut a = api().expect("a tile exists to be clicked, so the seed already ran");
+			let live = a.tab_ids();
+			for id in [CHART_PANEL, DAG_PANEL] {
+				if !live.iter().any(|p| p.0 == id) {
+					a.add_tab(gid, PanelId(id.into()));
+				}
+			}
+		})
+	});
+	let panels = use_signal(|| {
+		vec![
+			DockPanel {
+				id: PanelId(CHART_PANEL.into()),
+				title: "chart".into(),
+				content: rsx! {
+					ChartPane {}
+				},
+			},
+			DockPanel {
+				id: PanelId(DAG_PANEL.into()),
+				title: "dag".into(),
+				content: rsx! {
+					DagPane {}
+				},
+			},
+		]
+	});
 
 	// Boot: pick up the server's current replay position (survives page reloads).
 	use_future(|| async {
@@ -73,18 +114,6 @@ pub fn Replay() -> Element {
 		while let Some(ts_sec) = rx.next().await {
 			spawn(async move {
 				state::seek_ts((ts_sec * 1e9) as i64).await;
-			});
-		}
-	});
-
-	// Mount the chart when the day payload lands.
-	use_effect(move || {
-		if let Some(Ok(json)) = &*day.read() {
-			let json = json.clone();
-			spawn(async move {
-				if let Some(el) = chart_el() {
-					banner.set(v_utils::lwc::mount(el, "/lwc_draw.js", &json, r##"{"theme":"#131722"}"##).await);
-				}
 			});
 		}
 	});
@@ -163,25 +192,67 @@ pub fn Replay() -> Element {
 			if let Some(msg) = banner() {
 				div { class: "banner", "{msg}" }
 			}
-			div { class: "split",
-				div { class: "chart-pane",
-					div { class: "chart-host",
-						div { id: CHART_ID, style: "position:absolute;inset:0" }
-					}
+			div { class: "dock-host",
+				PackedArea {
+					panels,
+					on_ready: Some(Callback::new(move |a: PackedApi| {
+						api.set(Some(a));
+						seed(a);
+					})),
 				}
-				div { class: "dag-pane",
-					match &*topology.read() {
-						None => rsx! {
-							div { class: "loading", "loading…" }
-						},
-						Some(Err(e)) => rsx! {
-							div { class: "error", "error: {e}" }
-						},
-						Some(Ok(t)) => rsx! {
-							dag::DagPanel { topology: t.clone() }
-						},
-					}
-				}
+			}
+		}
+	}
+}
+
+/// Fresh-layout seed: the ratio the old fixed split had, both tiles full height.
+fn seed(mut api: PackedApi) {
+	let cols = api.cols().max(2);
+	let chart_w = (cols * 9 / 16).max(1);
+	let rows = Config::default().rows;
+	for (id, w) in [(CHART_PANEL, chart_w), (DAG_PANEL, cols - chart_w)] {
+		let gid = api.mint_group_id();
+		api.place(Group::new(gid, PanelId(id.into())), w, rows, MinSize::Rem { w: 12.0, h: 8.0 });
+	}
+}
+
+/// Mounting waits on the day payload, which lands long after this pane is on screen — so the host
+/// element the shim needs is always there by the time the effect fires.
+#[component]
+fn ChartPane() -> Element {
+	let day = use_context::<Resource<Result<String, String>>>();
+	let mut banner = use_context::<Signal<Option<String>>>();
+	use_effect(move || {
+		if let Some(Ok(json)) = &*day.read() {
+			let json = json.clone();
+			spawn(async move {
+				let el = chart_el().expect("the chart host renders with this pane");
+				banner.set(v_utils::lwc::mount(el, "/lwc_draw.js", &json, r##"{"theme":"#131722"}"##).await);
+			});
+		}
+	});
+	rsx! {
+		div { class: "chart-host",
+			div { id: CHART_ID, style: "position:absolute;inset:0" }
+		}
+	}
+}
+
+#[component]
+fn DagPane() -> Element {
+	let topology = use_context::<Resource<Result<Vec<TopoNode>, String>>>();
+	rsx! {
+		div { class: "dag-pane",
+			match &*topology.read() {
+				None => rsx! {
+					div { class: "loading", "loading…" }
+				},
+				Some(Err(e)) => rsx! {
+					div { class: "error", "error: {e}" }
+				},
+				Some(Ok(t)) => rsx! {
+					dag::DagPanel { topology: t.clone() }
+				},
 			}
 		}
 	}

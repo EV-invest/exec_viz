@@ -7,6 +7,7 @@ edition = "2024"
 # so none of the axum/tokio server half is dragged onto the wasm target.
 [dependencies]
 dioxus.workspace = true
+dockviewers_dioxus.workspace = true
 exec_viz.workspace = true
 futures.workspace = true
 getrandom.workspace = true

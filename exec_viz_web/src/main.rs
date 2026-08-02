@@ -17,7 +17,6 @@ fn main() {
 #[component]
 fn App() -> Element {
 	rsx! {
-		document::Style { {include_str!("../assets/app.css")} }
 		views::Replay {}
 	}
 }

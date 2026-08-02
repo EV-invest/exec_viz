@@ -1138,6 +1138,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "dockviewers_core"
+version = "0.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bade9be853021819187b7cd9deb188873bedf6a40f42983addcfabfc76e36d15"
+dependencies = [
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "dockviewers_dioxus"
+version = "0.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "204acaf4f8929e743051eb66eeb5b37430ece280d2da1e8284ff02af8f8f2cbe"
+dependencies = [
+ "dioxus",
+ "dockviewers_core",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1250,6 +1274,7 @@ name = "exec_viz_web"
 version = "0.1.0"
 dependencies = [
  "dioxus",
+ "dockviewers_dioxus",
  "exec_viz",
  "futures",
  "getrandom 0.3.4",
@@ -4059,7 +4084,7 @@ dependencies = [
 
 [[package]]
 name = "v_utils"
-version = "2.16.1"
+version = "2.17.1"
 dependencies = [
  "ahash",
  "bon",
@@ -4105,7 +4130,7 @@ dependencies = [
 
 [[package]]
 name = "v_utils_macros"
-version = "2.12.1"
+version = "2.12.2"
 dependencies = [
  "eyre",
  "heck",
