@@ -1,6 +1,6 @@
-/* Selectors match the Dioxus DOM (exec_viz_web/src/views.rs): one `.wrap` flex column holding the
-   `.nav` status bar + the `.dock-host` grid (chart tile and DAG activations tile). Served by this
-   crate rather than bundled with the front-end — see `index.html`. */
+/* Selectors match the Dioxus DOM (src/views.rs): one `.wrap` flex column holding the
+   `.nav` status bar + the `.dock-host` grid (chart tile and DAG activations tile). The two boxes
+   that carry the column are styled inline instead — see `views.rs`. */
 
 html, body, #main {
   margin: 0;
@@ -13,13 +13,6 @@ html, body, #main {
 }
 
 #main {
-  display: flex;
-  flex-direction: column;
-}
-
-.wrap {
-  flex: 1 1 auto;
-  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -88,9 +81,6 @@ html, body, #main {
 /* Body: the dockviewers grid holding the chart and DAG tiles. `--dv-*` are the library's theme
    hooks; the content pad is zeroed so the chart still runs edge to edge inside its tile. */
 .dock-host {
-  flex: 1 1 auto;
-  min-height: 0;
-  position: relative;
   --dv-fg: #d0d4dc;
   --dv-group-bg: #131722;
   --dv-tab-bg: #131722;

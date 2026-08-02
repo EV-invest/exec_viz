@@ -123,7 +123,9 @@ pub fn Replay() -> Element {
 	let bar = bar_node(&topology);
 	let bar_waiting = bar.as_deref().is_some_and(waiting);
 	rsx! {
-		div { class: "wrap",
+		// Inline, not in app.css: the dock measures its container on mount, before the injected
+		// stylesheet lands — from the sheet these two boxes are zero-height on that one frame.
+		div { class: "wrap", style: "height:100vh; display:flex; flex-direction:column;",
 			nav { class: "nav",
 				span { "exec_viz" }
 				match &frame {
@@ -192,7 +194,7 @@ pub fn Replay() -> Element {
 			if let Some(msg) = banner() {
 				div { class: "banner", "{msg}" }
 			}
-			div { class: "dock-host",
+			div { class: "dock-host", style: "flex:1 1 auto; min-height:0; position:relative;",
 				PackedArea {
 					panels,
 					on_ready: Some(Callback::new(move |a: PackedApi| {
