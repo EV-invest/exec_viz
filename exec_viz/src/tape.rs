@@ -19,9 +19,10 @@ use crate::api_types::{Activation, ActivationFrame, BarOut, DayOut, GuideOut, In
 pub struct Viz(Arc<Mutex<Tape>>);
 
 impl Viz {
-	/// `price_node` backs the candles and is skipped in the indicator panes; `None` = no price
-	/// pane. `capacity` bounds the retained tick count — see [`Tape::thin`] for what a run longer
-	/// than that keeps — and `bucket_ms` is the chart's sample period.
+	/// `price_node` names an OHLCV node — its recorded series *is* the candle pane, and it is skipped
+	/// in the indicator panes so it draws once; `None` = no price pane. `capacity` bounds the
+	/// retained tick count — see [`Tape::thin`] for what a run longer than that keeps — and
+	/// `bucket_ms` is the chart's sample period.
 	pub fn new(price_node: Option<&str>, capacity: usize, bucket_ms: i64) -> Self {
 		assert!(capacity > 3 && bucket_ms > 0);
 		Self(Arc::new(Mutex::new(Tape {
@@ -34,7 +35,6 @@ impl Viz {
 			stride: 1,
 			sealed: false,
 			series: Vec::new(),
-			bars: Vec::new(),
 			cursor: 0,
 			ts_ns: 0,
 			idx: 0,
@@ -55,20 +55,6 @@ impl Viz {
 		t.ticks.push_back(Tick { abs, ts_ns, acts: Vec::new() });
 		drop(t);
 		self
-	}
-
-	/// A closed price bar for the chart's candle pane.
-	pub fn bar(&self, bar: BarOut) {
-		let mut t = self.lock();
-		// The chart drops every series it holds — silently, in a production build — over one
-		// non-ascending point, so a re-sent bar has to be loud here instead.
-		assert!(
-			t.bars.last().is_none_or(|b| b.ts_ms < bar.ts_ms),
-			"bars must arrive closed and in order: {} after {}",
-			bar.ts_ms,
-			t.bars.last().expect("checked").ts_ms
-		);
-		t.bars.push(bar);
 	}
 
 	/// Ends the recording: the tick `at` opened last becomes addressable and `total` stops growing.
@@ -165,7 +151,6 @@ pub(crate) struct Tape {
 	/// The recording is over — see [`Tape::head`].
 	sealed: bool,
 	series: Vec<SeriesOut>,
-	bars: Vec<BarOut>,
 	/// Ticks consumed; the frame describes the one that consumed `cursor - 1`. Absolute, so a
 	/// thinning pass under a parked cursor cannot slide it.
 	cursor: usize,
@@ -233,7 +218,7 @@ impl Tape {
 			.map(|s| (s.node.as_str(), s.deps.first().expect("a buffer has one dep").as_str()))
 			.collect();
 		DayOut {
-			bars: self.bars.clone(),
+			bars: self.candles(),
 			series: self
 				.series
 				.iter()
@@ -245,6 +230,32 @@ impl Tape {
 				.collect(),
 			price_node: self.price_node.clone(),
 		}
+	}
+
+	/// The candle pane, read off the price node's own recording rather than pushed in beside it: a
+	/// bar is a node like any other, and an app that has one in its graph should not also have to
+	/// hold it as an output just to draw it. Bucketed on the same grid as every indicator, so a
+	/// candle and the lines derived from it sit on one x — a candle keyed by its open would not.
+	fn candles(&self) -> Vec<BarOut> {
+		let Some(price) = &self.price_node else { return Vec::new() };
+		let Some(s) = self.series.iter().find(|s| &s.node == price) else {
+			// Within the first tick the node may simply not have been stepped yet; once one has closed,
+			// a name that resolves to nothing is a typo in the app's `Viz::new`.
+			assert!(self.head() < 1, "price_node `{price}` names no node in the graph");
+			return Vec::new();
+		};
+		assert_eq!(s.dims.iter().product::<usize>(), 5, "price_node `{price}` must be an OHLCV bar");
+		s.points
+			.iter()
+			.map(|p| BarOut {
+				ts_ms: p.ts_ms,
+				open: p.vals[0],
+				high: p.vals[1],
+				low: p.vals[2],
+				close: p.vals[3],
+				volume: p.vals[4],
+			})
+			.collect()
 	}
 
 	pub(crate) fn frame(&self) -> ActivationFrame {

@@ -25,7 +25,7 @@ That single choice sets the shape of everything else:
 ```mermaid
 flowchart LR
     G[app's graph] -->|tick_obs| V["Viz (Observer)"]
-    V --> T[Tape: topology · ticks · series · bars]
+    V --> T[Tape: topology · ticks · series]
     T --> A["axum handlers: /api/*"]
     A -->|JSON| W["exec_viz_web (wasm)"]
     W --> C[lwc candle chart]
@@ -40,7 +40,7 @@ flowchart LR
 - `tape` — the whole model. `Viz` is a `Clone` handle over an `Arc<Mutex<Tape>>`: the
   recording side implements `Observer`, the read side is what the server scrubs. `Tape`
   holds the node `topology` (recorded once, on the first tick), the tick ring, the
-  downsampled per-node `series`, the `bars`, and the cursor. Every replay op —
+  downsampled per-node `series` (`price_node`'s doubling as the candles), and the cursor. Every replay op —
   `step`, `seek`, `seek_ts`, `step_until`, `step_until_change` — is a method here that
   moves the cursor and returns an `ActivationFrame`.
 - `server` — axum router and handlers, one thin `Json(...)` line each. Runtime-free:

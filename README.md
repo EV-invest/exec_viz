@@ -39,11 +39,11 @@ Without the env var the server panics on boot rather than serving a guessed-at (
 Attach a `Viz` to the graph you already have, and serve it. `bind` is separate from `serve_on` precisely so the URL answers — and prints — *before* the work it describes begins:
 
 ```rust,ignore
-use exec_viz::{Viz, api_types::BarOut};
+use exec_viz::Viz;
 
-// `price_node` backs the candles and is skipped in the indicator panes; `capacity` bounds the
+// `price_node` names an OHLCV node, whose series is the candle pane; `capacity` bounds the
 // retained ticks; `bucket_ms` is the chart's sample period.
-let mut viz = Viz::new(Some("Bar1m"), 100_000, 60_000);
+let mut viz = Viz::new(Some("Bar:1m"), 100_000, 60_000);
 
 let listener = Viz::bind(8080).await;
 println!("http://{}", listener.local_addr()?);
@@ -56,7 +56,7 @@ tokio::join!(viz.clone().serve_on(listener), async {
 });
 ```
 
-`viz.at(ts)` opens a tick and hands back the observer, so the graph's own sweep is the thing being recorded — there is no second evaluation path to keep in step with the first. Closed price bars go in via `viz.bar(BarOut { .. })`. `seal` takes `self`, so the handle you recorded through is spent and `total` stops growing.
+`viz.at(ts)` opens a tick and hands back the observer, so the graph's own sweep is the thing being recorded — there is no second evaluation path to keep in step with the first. Nothing else goes in: the candles are read off `price_node`'s own `[open, high, low, close, volume]` recording, so a bar the graph already computes is not also held as an output to draw it. `seal` takes `self`, so the handle you recorded through is spent and `total` stops growing.
 
 **The tape is the storage.** A live run cannot be re-run, so ticks are kept rather than replayed-by-rewinding. Past `capacity`, the buffer *thins* instead of dropping its front: the newest `capacity / 2` ticks stay whole, and everything older is decimated to every `stride`-th tick (`stride` only doubles). A run many times the capacity stays walkable end to end, with the freshest stretch still tick-exact — where a plain ring would make the beginning of a long recording unreachable for the rest of the run. The per-node series the chart draws is downsampled online into `bucket_ms` buckets and never dropped.
 
