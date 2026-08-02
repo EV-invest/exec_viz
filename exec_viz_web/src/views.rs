@@ -4,7 +4,7 @@
 use dioxus::prelude::*;
 use exec_viz::api_types::TopoNode;
 use futures::StreamExt as _;
-use wasm_bindgen::JsCast as _;
+use wasm_bindgen::{JsCast as _, closure::Closure};
 
 use crate::{dag, keyboard, state};
 
@@ -62,6 +62,18 @@ pub fn Replay() -> Element {
 			if period != 0 && polls % period == 0 {
 				day.restart();
 			}
+		}
+	});
+
+	// Chart click → seek. Same shape as the key loop, and for the same reason: the JS callback has no
+	// dioxus runtime to await an API call in.
+	use_future(move || async move {
+		let (tx, mut rx) = futures::channel::mpsc::unbounded::<f64>();
+		install_seek(tx);
+		while let Some(ts_sec) = rx.next().await {
+			spawn(async move {
+				state::seek_ts((ts_sec * 1e9) as i64).await;
+			});
 		}
 	});
 
@@ -182,6 +194,19 @@ fn bar_node(topology: &Resource<Result<Vec<TopoNode>, String>>) -> Option<String
 	let t = topology.read();
 	let Some(Ok(t)) = &*t else { return None };
 	t.iter().map(|n| &n.node).find(|n| n.starts_with("Bar")).cloned()
+}
+
+/// The hook `lwc_draw.js` calls with the clicked bar's time, in seconds — the inbound twin of
+/// `__execVizSetCursor`.
+fn install_seek(tx: futures::channel::mpsc::UnboundedSender<f64>) {
+	let cb = Closure::wrap(Box::new(move |ts_sec: f64| {
+		let _ = tx.unbounded_send(ts_sec); // receiver lives as long as the page; a closed channel means teardown
+	}) as Box<dyn FnMut(f64)>);
+	if let Some(win) = web_sys::window() {
+		js_sys::Reflect::set(&win, &wasm_bindgen::JsValue::from_str("__execVizSeek"), cb.as_ref()).expect("window takes properties");
+	}
+	// Program-lifetime hook: ownership handed to the JS runtime (standard wasm pattern).
+	cb.forget();
 }
 
 fn waiting(key: &str) -> bool {

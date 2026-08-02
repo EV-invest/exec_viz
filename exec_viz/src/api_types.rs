@@ -131,6 +131,11 @@ pub struct SeekReq {
 	pub tick: usize,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct SeekTsReq {
+	pub ts_ns: i64,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StepUntilReq {
 	pub node: String,

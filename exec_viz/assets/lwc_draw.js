@@ -143,6 +143,7 @@ function teardown(chart) {
   for (const s of st.series) chart.removeSeries(s);
   if (st.crosshair) chart.unsubscribeCrosshairMove(st.crosshair);
   if (st.ttMove) chart.chartElement().removeEventListener("mousemove", st.ttMove);
+  if (st.click) chart.unsubscribeClick(st.click);
   if (st.tt) st.tt.remove();
   chart.__ev = null;
 }
@@ -312,7 +313,7 @@ export function draw(chart, data, viewSpec) {
     timeScale: { timeVisible: true, secondsVisible: false, borderColor: GRID, minBarSpacing: 0.001 },
   });
 
-  const st = { series: [], tip: [], tt: null, ttMove: null, crosshair: null };
+  const st = { series: [], tip: [], tt: null, ttMove: null, crosshair: null, click: null };
   const candle = chart.addSeries(CandlestickSeries, { upColor: CANDLE, downColor: CANDLE, borderVisible: false, wickUpColor: CANDLE, wickDownColor: CANDLE }, 0);
   candle.setData(data.bars.map((b) => ({ time: b.ts_ms / 1000, open: b.open, high: b.high, low: b.low, close: b.close })));
   st.series.push(candle);
@@ -331,6 +332,13 @@ export function draw(chart, data, viewSpec) {
   const cursor = new CursorPrimitive();
   candle.attachPrimitive(cursor);
   window.__execVizSetCursor = (tsSec) => cursor.set(tsSec);
+
+  // Click anywhere on the time axis to send the replay there; the wasm side owns the hook, and a
+  // draw before it boots simply has nowhere to send the click yet.
+  st.click = (param) => {
+    if (param.time != null) window.__execVizSeek?.(param.time);
+  };
+  chart.subscribeClick(st.click);
 
   chart.__ev = st;
   // Only the first draw with anything in it frames the data: under a live feed `draw` re-runs on

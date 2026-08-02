@@ -306,6 +306,16 @@ impl Tape {
 		f
 	}
 
+	/// Parks on the newest tick at or before `ts_ns` — what a click on the chart's time axis names.
+	/// ponytail: linear, like [`Tape::held`]; a feed's tick timestamps are near-sorted but not
+	/// guaranteed so, and a binary search would land off-by-a-batch on the ones that weave.
+	pub(crate) fn seek_ts(&mut self, ts_ns: i64) -> ActivationFrame {
+		self.park(self.ticks.iter().rposition(|t| t.ts_ns <= ts_ns).unwrap_or(0));
+		let mut f = self.frame();
+		f.pending = !self.sealed && self.ticks.back().is_some_and(|t| t.ts_ns < ts_ns);
+		f
+	}
+
 	/// Advance until `node` (trimmed name) fires, or the recording ends.
 	pub(crate) fn step_until(&mut self, node: &str) -> ActivationFrame {
 		match self.topology.iter().position(|n| n.node == node) {

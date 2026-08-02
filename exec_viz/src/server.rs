@@ -16,7 +16,7 @@ use axum::{
 use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
 
 use crate::{
-	api_types::{SeekReq, StepReq, StepUntilChangeReq, StepUntilReq},
+	api_types::{SeekReq, SeekTsReq, StepReq, StepUntilChangeReq, StepUntilReq},
 	tape::Viz,
 };
 
@@ -41,6 +41,7 @@ impl Viz {
 			.route("/api/status", get(status))
 			.route("/api/step", post(step))
 			.route("/api/seek", post(seek))
+			.route("/api/seek_ts", post(seek_ts))
 			.route("/api/step_until", post(step_until))
 			.route("/api/step_until_change", post(step_until_change))
 			.route("/lwc_draw.js", get(lwc_draw))
@@ -78,6 +79,10 @@ async fn step(State(v): State<Viz>, Json(req): Json<StepReq>) -> impl IntoRespon
 
 async fn seek(State(v): State<Viz>, Json(req): Json<SeekReq>) -> impl IntoResponse {
 	Json(v.lock().seek(req.tick))
+}
+
+async fn seek_ts(State(v): State<Viz>, Json(req): Json<SeekTsReq>) -> impl IntoResponse {
+	Json(v.lock().seek_ts(req.ts_ns))
 }
 
 async fn step_until(State(v): State<Viz>, Json(req): Json<StepUntilReq>) -> impl IntoResponse {

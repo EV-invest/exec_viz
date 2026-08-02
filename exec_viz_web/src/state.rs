@@ -8,7 +8,7 @@
 use std::{collections::HashSet, future::Future};
 
 use dioxus::prelude::*;
-use exec_viz::api_types::{ActivationFrame, SeekReq, StepReq, StepUntilChangeReq, StepUntilReq, TopoNode};
+use exec_viz::api_types::{ActivationFrame, SeekReq, SeekTsReq, StepReq, StepUntilChangeReq, StepUntilReq, TopoNode};
 use gloo_net::http::Request;
 use wasm_bindgen::{JsCast as _, JsValue};
 
@@ -51,6 +51,11 @@ pub async fn step_one() {
 }
 pub async fn seek(tick: usize) {
 	until_recorded("seek", || async move { post_json("/api/seek", &SeekReq { tick }).await }).await;
+}
+/// Where a click on the chart lands: the newest tick at or before the bar clicked. Shares `seek`'s
+/// [`WAITING`] key — they are the same control, one addressed by tick and one by time.
+pub async fn seek_ts(ts_ns: i64) {
+	until_recorded("seek", || async move { post_json("/api/seek_ts", &SeekTsReq { ts_ns }).await }).await;
 }
 pub async fn step_until(node: &str) {
 	let node = node.to_string();
