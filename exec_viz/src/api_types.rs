@@ -43,6 +43,7 @@ pub struct PlotOut {
 	pub labels: Vec<String>,
 	pub inks: Vec<InkOut>,
 	pub overlay: bool,
+	pub solo: bool,
 	pub bars: bool,
 }
 

@@ -148,8 +148,9 @@ function teardown(chart) {
 }
 
 // One pane per DAG layer below price+volume; all of a layer's nodes drawn together, each on its
-// own price scale (layers mix units — RSI 0–100 next to λ ~1e-6). Gate nodes get one dedicated
-// pane at the bottom instead: 0/1 square waves on the shared time axis.
+// own price scale (layers mix units — RSI 0–100 next to λ ~1e-6), except plots asking to be `solo`,
+// which take a pane of their own right under their layer's. Gate nodes get one dedicated pane at
+// the bottom instead: 0/1 square waves on the shared time axis.
 function addIndicatorPanes(chart, data, st) {
   const series = data.series ?? [];
   const depth = new Map();
@@ -192,9 +193,9 @@ function addIndicatorPanes(chart, data, st) {
 
   const overlays = drawable.filter((s) => s.plot.overlay);
   const indicators = drawable.filter((s) => !gateSet.has(s.node) && !s.plot.overlay);
-  for (const d of [...new Set(indicators.map((s) => depth.get(s.node)))].sort((a, b) => a - b)) {
+  const drawLayer = (nodes) => {
+    if (!nodes.length) return;
     const pane = chart.panes().length;
-    const nodes = indicators.filter((s) => depth.get(s.node) === d);
     for (const s of nodes) {
       const n = s.slots.length;
       const opts = { priceScaleId: `ind-${s.key}`, lastValueVisible: false, priceLineVisible: false };
@@ -244,6 +245,13 @@ function addIndicatorPanes(chart, data, st) {
     }
     const text = nodes.map((s) => (s.plot.labels.length ? `${s.node} (${s.plot.labels.join(" · ")})` : s.node)).join("   ");
     createTextWatermark(chart.panes()[pane], { horzAlign: "left", vertAlign: "top", lines: [{ text, color: "rgba(150,160,180,0.55)", fontSize: 10 }] });
+  };
+  for (const d of [...new Set(indicators.map((s) => depth.get(s.node)))].sort((a, b) => a - b)) {
+    const layer = indicators.filter((s) => depth.get(s.node) === d);
+    // shared pane first, then each solo claimant directly under it — a layer of nothing but solo
+    // plots opens no shared pane at all.
+    drawLayer(layer.filter((s) => !s.plot.solo));
+    for (const s of layer.filter((s) => s.plot.solo)) drawLayer([s]);
   }
 
   // price-denominated series drawn on the candle pane (pane 0), on the shared price scale.
