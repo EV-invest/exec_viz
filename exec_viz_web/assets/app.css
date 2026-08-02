@@ -339,6 +339,13 @@ html, body, #main {
   color: #d0d4dc;
 }
 
+/* what the graph was declared for, as against what it computes on the way there */
+.dag-name.out {
+  font-weight: 800;
+  color: #b47cff;
+  text-shadow: 0 0 6px rgba(180, 124, 255, 0.35);
+}
+
 /* Unified crosshair tooltip: one floating div the lwc shim positions over the chart host. */
 .tooltip {
   position: absolute;

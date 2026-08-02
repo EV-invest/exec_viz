@@ -27,6 +27,10 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 		}
 	}
 
+	// A node no other node reads is what the graph was declared for — `graph!` instantiates nothing
+	// an output does not reach, so a leaf of the drawn graph *is* an output.
+	let consumed: std::collections::HashSet<&str> = topology.iter().flat_map(|n| n.deps.iter()).map(String::as_str).collect();
+
 	// A buffer is an adornment on its source, not a peer: `source -> (buffer node, depth)`. Its
 	// single dep is the series it retains, and one buffer per series makes the map total.
 	let hist: HashMap<String, (String, String)> = topology
@@ -198,7 +202,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 											}
 										}
 									}
-									div { class: "dag-name", "{node}" }
+									div { class: if consumed.contains(node.as_str()) { "dag-name" } else { "dag-name out" }, "{node}" }
 									div { class: "dag-out", "{out}" }
 									div {
 										class: "dag-grid",
