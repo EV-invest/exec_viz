@@ -19,13 +19,9 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	let mut ranges = use_signal(HashMap::<String, Vec<(f64, f64)>>::new);
 	let mut edges = use_signal(Vec::<Edge>::new);
 
-	// glyph ids (`dagcard-{gate}`/`dagel-{gate}-·`) assume a single owner per gate
-	let mut gate_set = std::collections::HashSet::new();
-	for n in &topology {
-		for g in &n.gates {
-			assert!(gate_set.insert(g.clone()), "gate {g} gated by multiple nodes");
-		}
-	}
+	// One gate switches any number of nodes — a screener gates every node downstream of it — and the
+	// glyph is drawn once per card it switches, so its ids carry the card that owns the copy.
+	let gate_set: std::collections::HashSet<&str> = topology.iter().flat_map(|n| n.gates.iter()).map(String::as_str).collect();
 
 	// A node no other node reads is what the graph was declared for — `graph!` instantiates nothing
 	// an output does not reach, so a leaf of the drawn graph *is* an output.
@@ -65,7 +61,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 			.max()
 			.unwrap_or(0);
 		level.insert(n.node.clone(), l);
-		if gate_set.contains(&n.node) || hist.values().any(|(b, _)| *b == n.node) {
+		if gate_set.contains(n.node.as_str()) || hist.values().any(|(b, _)| *b == n.node) {
 			continue; // gates and buffers dock onto a card, they are not peer cards
 		}
 		if cols.len() <= l {
@@ -159,17 +155,16 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 												Some(v) => (fmt_val(v), heat(ranges_r.get(&g).and_then(|r| r.first()), v), "dag-cell"),
 												None => (String::new(), 0.0, "dag-cell dim"),
 											};
-											let enter = g.clone();
+											let owner = n.node.clone();
+											let enter = (n.node.clone(), g.clone());
 											let leave = n.node.clone();
 											let clicked = g.clone();
-											let cell_enter = g.clone();
-											let cell_leave = g.clone();
 											rsx! {
 												div {
 													key: "{g}",
-													id: "dagcard-{g}",
+													id: "dagcard-{owner}-{g}",
 													class: "{gclass}",
-													onmouseenter: move |_| hover.set(Hover::Card(enter.clone())),
+													onmouseenter: move |_| hover.set(Hover::Gate(enter.0.clone(), enter.1.clone())),
 													onmouseleave: move |_| hover.set(Hover::Card(leave.clone())),
 													onclick: move |e| {
 														e.stop_propagation();
@@ -188,14 +183,13 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 													span { class: "dag-gate-pwr", "⏻" }
 													span { class: "dag-gate-name", "{g}" }
 													div {
-														id: "dagel-{g}-0",
+														id: "dagel-{owner}-{g}-0",
 														class: "{cell_class}",
 														style: "background: rgba(38, 166, 154, {gheat});",
-														onmouseenter: move |_| hover.set(Hover::Cell(cell_enter.clone(), 0)),
-														onmouseleave: move |_| hover.set(Hover::Card(cell_leave.clone())),
 														"{txt}"
 													}
-													if !gdetail.is_empty() && hovered_node.as_deref() == Some(g.as_str()) {
+													// the glyph is scalar, so the card's own hover already names the one cell
+													if !gdetail.is_empty() && hover() == Hover::Gate(n.node.clone(), g.clone()) {
 														div { class: "dag-tip", "{gdetail}" }
 													}
 												}
@@ -283,7 +277,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 					rsx! {
 						for e in edges.read().iter().filter(move |e| match &h {
 							Hover::None => true,
-							Hover::Card(n) => e.to.0 == *n || e.from.0 == *n,
+							Hover::Card(n) | Hover::Gate(_, n) => e.to.0 == *n || e.from.0 == *n,
 							Hover::Cell(n, i) => (e.to.0 == *n && e.to.1 == *i) || (e.from.0 == *n && e.from.1 == *i),
 						}) {
 							line {
@@ -308,13 +302,16 @@ enum Hover {
 	None,
 	Card(String),
 	Cell(String, usize),
+	/// A gate glyph, by the card it is docked on and the gate it draws: the same gate is drawn on
+	/// every card it switches, and only the copy under the pointer may open its tip.
+	Gate(String, String),
 }
 
 impl Hover {
 	fn node(&self) -> Option<&str> {
 		match self {
 			Hover::None => None,
-			Hover::Card(n) | Hover::Cell(n, _) => Some(n),
+			Hover::Card(n) | Hover::Cell(n, _) | Hover::Gate(_, n) => Some(n),
 		}
 	}
 }
@@ -367,7 +364,12 @@ fn measure_edges(acts: &[Activation], dep_lens: &HashMap<String, usize>) -> Vec<
 					local -= lens[dep_idx];
 					dep_idx += 1;
 				}
-				let from = doc.get_element_by_id(&format!("dagel-{}-{local}", a.deps[dep_idx]));
+				// a gate has no card of its own — the copy this edge starts at is the one docked on `a`
+				let dep = &a.deps[dep_idx];
+				let from = doc.get_element_by_id(&match a.gates.contains(dep) {
+					true => format!("dagel-{}-{dep}-{local}", a.node),
+					false => format!("dagel-{dep}-{local}"),
+				});
 				let to = doc.get_element_by_id(&format!("dagel-{}-{i}", a.node));
 				let (Some(from_el), Some(to_el)) = (from, to) else { continue };
 				let fr = from_el.get_bounding_client_rect();
