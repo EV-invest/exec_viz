@@ -5,7 +5,7 @@ use exec_viz::Viz;
 
 // `price_node` names an OHLCV node, whose series is the candle pane; `capacity` bounds the
 // retained ticks; `bucket_ms` is the chart's sample period.
-let mut viz = Viz::new(Some("Bar:1m"), 100_000, 60_000);
+let mut viz = Viz::new(Some(<Bar1m as Cell>::NAME), 100_000, 60_000);
 
 let listener = Viz::bind(8080).await;
 println!("http://{}", listener.local_addr()?);

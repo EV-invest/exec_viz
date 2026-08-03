@@ -9,7 +9,7 @@
 //! recording — [`Viz::bind`] is separate precisely so the URL answers before the work begins:
 //!
 //! ```ignore
-//! let mut viz = Viz::new(Some("Bar1m"), 100_000, 60_000);
+//! let mut viz = Viz::new(Some(<Bar1m as Cell>::NAME), 100_000, 60_000);
 //! let server = viz.clone().serve_on(Viz::bind(port).await);
 //! tokio::join!(server, async {
 //!     let out = graph.tick_obs(batches, viz.at(ts_ns));

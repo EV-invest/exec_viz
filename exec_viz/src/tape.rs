@@ -20,10 +20,12 @@ pub struct Viz(Arc<Mutex<Tape>>);
 
 impl Viz {
 	/// `price_node` names an OHLCV node — its recorded series *is* the candle pane, and it is skipped
-	/// in the indicator panes so it draws once; `None` = no price pane. `capacity` bounds the
-	/// retained tick count — see [`Tape::thin`] for what a run longer than that keeps — and
-	/// `bucket_ms` is the chart's sample period.
-	pub fn new(price_node: Option<&str>, capacity: usize, bucket_ms: i64) -> Self {
+	/// in the indicator panes so it draws once; `None` = no price pane. Pass the node's own
+	/// [`Cell::NAME`](trading_data_dag::Cell::NAME) rather than a literal: a name is a `&'static str`
+	/// the graph already holds, and a hand-spelled one that matches nothing draws an empty chart.
+	/// `capacity` bounds the retained tick count — see [`Tape::thin`] for what a run longer than that
+	/// keeps — and `bucket_ms` is the chart's sample period.
+	pub fn new(price_node: Option<&'static str>, capacity: usize, bucket_ms: i64) -> Self {
 		assert!(capacity > 3 && bucket_ms > 0);
 		Self(Arc::new(Mutex::new(Tape {
 			price_node: price_node.map(str::to_string),
