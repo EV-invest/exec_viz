@@ -16,6 +16,9 @@ use trading_data_dag::{Fire, Ink, Observer, Plot};
 
 use crate::api_types::{Activation, ActivationFrame, DayOut, GuideOut, InkOut, PlotOut, PointOut, SeriesOut, TopoNode};
 
+/// The hover tooltip is a study aid, and a root's `Debug` is its whole arrival batch: unclipped, one
+/// tick of a busy feed outweighs a thousand quiet ones.
+const DETAIL_MAX: usize = 256;
 #[derive(Clone)]
 pub struct Viz(Arc<Mutex<Tape>>);
 
@@ -118,15 +121,16 @@ impl Observer for Rec<'_> {
 		let out: String = t.scratch.as_str().into();
 
 		t.scratch.clear();
-		write!(
+		// The `Err` is [`Clip`] reporting that it has seen enough, and `String` has no other failure —
+		// discarded because stopping the render early is the entire point of asking.
+		let _ = write!(
 			Clip {
 				out: &mut t.scratch,
 				left: Some(DETAIL_MAX)
 			},
 			"{:?}",
 			fire.debug
-		)
-		.expect("`String`'s `Write` is infallible");
+		);
 
 		if let Some(vals) = fire.vals {
 			let ms = t.ts_ns / 1_000_000;
@@ -417,21 +421,18 @@ impl From<&Plot> for PlotOut {
 	}
 }
 
-/// The hover tooltip is a study aid, and a root's `Debug` is its whole arrival batch: unclipped, one
-/// tick of a busy feed outweighs a thousand quiet ones.
-const DETAIL_MAX: usize = 256;
-
-/// A [`fmt::Write`](core::fmt::Write) sink that stops accepting after `DETAIL_MAX` chars, so a huge
-/// `Debug` is abandoned mid-render rather than built in full and then thrown away.
+/// A [`fmt::Write`](core::fmt::Write) sink that stops accepting after `DETAIL_MAX` chars. It reports
+/// the clip as `Err`, because a `Formatter`'s error is the only thing that stops a `Debug` mid-render
+/// — without it a batch root still walks and renders every element, and only then is truncated.
 struct Clip<'a> {
 	out: &'a mut String,
-	/// Chars still accepted; `None` once the ellipsis is in and everything after it is dropped.
+	/// Chars still accepted; `None` once the ellipsis is in.
 	left: Option<usize>,
 }
 
 impl core::fmt::Write for Clip<'_> {
 	fn write_str(&mut self, s: &str) -> core::fmt::Result {
-		let Some(left) = self.left else { return Ok(()) };
+		let Some(left) = self.left else { return Err(core::fmt::Error) };
 		if s.is_empty() {
 			return Ok(());
 		}
@@ -440,13 +441,14 @@ impl core::fmt::Write for Clip<'_> {
 				self.out.push_str(&s[..i]);
 				self.out.push('…');
 				self.left = None;
+				Err(core::fmt::Error)
 			}
 			None => {
 				self.left = Some(left - s.chars().count());
 				self.out.push_str(s);
+				Ok(())
 			}
 		}
-		Ok(())
 	}
 }
 
@@ -542,8 +544,11 @@ mod tests {
 					left: Some(DETAIL_MAX),
 				};
 				let cs: Vec<char> = src.chars().collect();
+				// `Err` is the stop signal a real `Debug` obeys via `?`; the loop obeys it the same way.
 				for part in cs.chunks(chunk) {
-					clip.write_str(&part.iter().collect::<String>()).expect("infallible");
+					if clip.write_str(&part.iter().collect::<String>()).is_err() {
+						break;
+					}
 				}
 				assert_eq!(got, whole(&src), "chunk={chunk} total={total}");
 			}

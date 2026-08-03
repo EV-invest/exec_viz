@@ -1,3 +1,4 @@
+#![feature(default_field_values)]
 //! DAG-activations replay for any `trading_data` graph: one computation structure, multiple
 //! interpretations. Prod evals via `step`; here the same tick chain runs under a recording
 //! [`trading_data_dag::Observer`], and the browser replays it tick-by-tick — layers lighting up,
@@ -12,7 +13,7 @@
 //! let mut viz = Viz::new(Some(<Bar1m as Cell>::NAME), 100_000, 60_000);
 //! let server = viz.clone().serve_on(Viz::bind(port).await);
 //! tokio::join!(server, async {
-//!     let out = graph.tick_obs(batches, viz.at(ts_ns));
+//!     let out = graph.tick_obs(ts_ns, batches, &mut viz.at(ts_ns));
 //!     viz.seal(); // a finite recording says so; a live feed never does
 //! });
 //! ```
@@ -29,4 +30,4 @@ mod server;
 #[cfg(feature = "server")]
 mod tape;
 #[cfg(feature = "server")]
-pub use tape::Viz;
+pub use tape::{Rec, Viz};
