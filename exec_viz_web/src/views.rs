@@ -80,22 +80,26 @@ pub fn Replay() -> Element {
 	// Free-run: poll-step while playing; `apply` flips PLAYING off only on error. Reaching the tape
 	// head is not an end — under a live run the tape grows behind us, so a step that lands on the
 	// head is just a poll, and the series it charts need re-fetching to keep up. Once sealed there
-	// is nothing left to re-fetch.
+	// is nothing left to re-fetch, and nothing to follow either: a finished recording opens where
+	// it was left, not at its end.
 	use_future(move || async move {
 		let mut polls = 0u32;
 		loop {
 			gloo_timers::future::TimeoutFuture::new(50).await;
 			polls += 1;
 			let playing = *state::PLAYING.peek();
-			if playing {
+			let sealed = state::FRAME.peek().as_ref().is_some_and(|f| f.sealed);
+			let following = *state::FOLLOW.peek() && !sealed;
+			if following {
+				state::step(usize::MAX).await;
+			} else if playing {
 				state::step(*state::SPEED.peek()).await;
 			}
 			// `/api/day` is a full clone of every bar and series point under the tape lock, so the
 			// idle rate is deliberately slow.
-			let sealed = state::FRAME.peek().as_ref().is_some_and(|f| f.sealed);
 			let period = if sealed {
 				0
-			} else if playing {
+			} else if playing || following {
 				20
 			} else {
 				100
@@ -120,6 +124,7 @@ pub fn Replay() -> Element {
 
 	let frame = state::FRAME();
 	let playing = state::PLAYING();
+	let following = state::FOLLOW() && !frame.as_ref().is_some_and(|f| f.sealed);
 	let bar = bar_node(&topology);
 	let bar_waiting = bar.as_deref().is_some_and(waiting);
 	rsx! {
@@ -144,6 +149,15 @@ pub fn Replay() -> Element {
 					class: if playing { "btn active" } else { "btn" },
 					onclick: move |_| state::toggle_play(),
 					if playing { "pause (p)" } else { "play (p)" }
+				}
+				span {
+					class: if following { "btn active" } else { "btn" },
+					onclick: move |_| {
+						spawn(async {
+							state::follow().await;
+						});
+					},
+					"live (l)"
 				}
 				span {
 					class: if waiting("step") { "btn waiting" } else { "btn" },
@@ -314,6 +328,7 @@ async fn handle_key(key: &str, bar: Option<&str>) {
 			},
 		"c" => state::step_until("Classify").await,
 		"n" => state::step_until_change().await,
+		"l" => state::follow().await,
 		_ => {}
 	}
 }

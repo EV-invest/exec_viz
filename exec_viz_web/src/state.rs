@@ -14,6 +14,9 @@ use wasm_bindgen::{JsCast as _, JsValue};
 
 pub static FRAME: GlobalSignal<Option<ActivationFrame>> = Signal::global(|| None);
 pub static PLAYING: GlobalSignal<bool> = Signal::global(|| false);
+/// Cursor rides the tape's growing end. On by default so a page opened against a live run needs no
+/// interaction; any explicit cursor op parks it.
+pub static FOLLOW: GlobalSignal<bool> = Signal::global(|| true);
 /// Events per free-run poll (one poll every 50ms).
 pub static SPEED: GlobalSignal<usize> = Signal::global(|| 512);
 pub static ERROR: GlobalSignal<Option<String>> = Signal::global(|| None);
@@ -80,6 +83,13 @@ pub fn toggle_select(node: &str) {
 pub fn toggle_play() {
 	let v = *PLAYING.peek();
 	*PLAYING.write() = !v;
+	*FOLLOW.write() = false;
+}
+/// Re-attach to the tape's end. Deliberately [`step`] and not [`until_recorded`]: a step past the
+/// head is `pending` by definition, and retrying it would spin for as long as the feed runs.
+pub async fn follow() {
+	*FOLLOW.write() = true;
+	step(usize::MAX).await;
 }
 pub fn speed_up() {
 	let v = *SPEED.peek();
@@ -101,6 +111,9 @@ where
 	Fut: Future<Output = Result<ActivationFrame, String>>, {
 	let generation = *GENERATION.peek() + 1;
 	*GENERATION.write() = generation;
+	// Naming a tick is taking the cursor by hand — every explicit op routes through here, and none of
+	// them want the free-run loop yanking the cursor back to the tape's end afterwards.
+	*FOLLOW.write() = false;
 	*WAITING.write() = Some(key.to_string());
 	// Exits on `!pending`, on an error through `apply`, or when a newer op supersedes this one.
 	//LOOP: re-issues until the tape holds the tick asked for — how long that takes is the feed's to say.

@@ -20,6 +20,9 @@ That single choice sets the shape of everything else:
 - **An op can outrun the recording.** Rather than block, the server answers with
   `pending: true` — "this ran out of recorded ticks, ask again later" — and the client
   re-issues, showing a `⟳` on the control that is chasing the feed.
+- **The cursor floats at the live edge** until an explicit op parks it, and re-attaches by
+  stepping past the head — the clamp in `Tape::step` is what makes "the end" addressable
+  without an endpoint that names it.
 - **A bounded buffer must not forget its front.** See *Thinning* below.
 
 ```mermaid
