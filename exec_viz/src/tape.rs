@@ -12,7 +12,7 @@ use std::{
 	sync::{Arc, Mutex, MutexGuard},
 };
 
-use trading_data_dag::{Fire, Ink, Observer, Plot};
+use trading_data_dag::{Fire, Ink, Observer, Plot, Want};
 
 use crate::api_types::{Activation, ActivationFrame, DayOut, GuideOut, InkOut, PlotOut, PointOut, SeriesOut, TopoNode};
 
@@ -84,6 +84,15 @@ impl Viz {
 pub struct Rec<'a>(MutexGuard<'a, Tape>);
 
 impl Observer for Rec<'_> {
+	/// A Jacobian is read by exactly one thing — [`Tape::frame`], for the single tick a client is
+	/// parked on — and [`Tape::thin`] will drop most of a long run, so the cheap answer would be to
+	/// ask for one only on a tick that survives. It cannot be known here: at record time every tick
+	/// is still in the whole-kept tail, and the strides [`Tape::thin`] will grow through depend on how
+	/// much longer the run goes. Guessing costs fidelity on a tick a client can still seek to.
+	fn want(&self) -> Want {
+		Want::Jac
+	}
+
 	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [bool], fire: Fire<'_>) {
 		let t = &mut *self.0;
 		let i = t.idx;
