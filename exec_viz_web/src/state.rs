@@ -147,12 +147,10 @@ fn set_cursor(ts_ns: i64) {
 	if ts_ns == 0 {
 		return;
 	}
-	let Some(win) = web_sys::window() else { return };
-	if let Some(f) = js_sys::Reflect::get(&win, &JsValue::from_str("__execVizSetCursor"))
-		.ok()
-		.as_ref()
-		.and_then(|f| f.dyn_ref::<js_sys::Function>())
-	{
+	let win = web_sys::window().expect("wasm32 target always runs in a browser");
+	let hook = js_sys::Reflect::get(&win, &JsValue::from_str("__execVizSetCursor")).expect("window takes property reads");
+	// The one genuinely absent case: no chart mounted yet, so nothing to point at.
+	if let Some(f) = hook.dyn_ref::<js_sys::Function>() {
 		let _ = f.call1(&JsValue::NULL, &JsValue::from_f64(ts_ns as f64 / 1e9)); // draw errors surface in the console, not here
 	}
 }

@@ -1,5 +1,5 @@
 // exec_viz chart logic — the app-specific half of the lightweight-charts shim. The shared v_utils
-// core (`lwc_core.js`) owns the chart instance and calls `draw(chart, data, viewSpec)`; this module
+// core (`lwc_core.js`) owns the chart instance and calls `draw(chart, data, viewSpec, lib)`; this module
 // is "what we chart": the day's 1m candles + volume, one indicator pane per DAG layer (topo depth,
 // recomputed here from each series' deps), a small gates pane, plus a replay-cursor vertical line the wasm side moves
 // via `window.__execVizSetCursor(tsSec)` as the replay advances.
@@ -10,7 +10,9 @@
 // data     = the parsed /api/day payload ({ bars, series: [SeriesOut], price_node }).
 // viewSpec = { theme }.
 
-import { ColorType, CrosshairMode, LineStyle, LineType, CandlestickSeries, HistogramSeries, LineSeries, createTextWatermark } from "lightweight-charts";
+// Bound from `draw`'s `lib` argument rather than imported: v_utils' lwc_core owns the one
+// lightweight-charts instance, and a second copy would not share the chart internals we reach into.
+let ColorType, CrosshairMode, LineStyle, LineType, CandlestickSeries, HistogramSeries, LineSeries, createTextWatermark;
 
 const GRID = "#1e2130";
 const CANDLE = "rgba(255,255,255,0.5)";
@@ -300,7 +302,8 @@ function addIndicatorPanes(chart, data, st) {
   }
 }
 
-export function draw(chart, data, viewSpec) {
+export function draw(chart, data, viewSpec, lib) {
+  ({ ColorType, CrosshairMode, LineStyle, LineType, CandlestickSeries, HistogramSeries, LineSeries, createTextWatermark } = lib);
   teardown(chart);
   const theme = viewSpec.theme || "#131722";
   document.documentElement.style.background = theme;
