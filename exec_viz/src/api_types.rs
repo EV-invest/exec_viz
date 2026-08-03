@@ -70,10 +70,10 @@ pub struct SeriesOut {
 /// the only reader). Snapshotted per request — under a live feed it keeps growing.
 #[derive(Clone, Debug, Serialize)]
 pub struct DayOut {
-	pub bars: Vec<BarOut>,
 	pub series: Vec<SeriesOut>,
-	/// Node whose values back the candles — the chart skips it in the indicator panes. `None`
-	/// when the graph has no price node, and then nothing is skipped.
+	/// Node whose recorded series *is* the candle pane, read positionally as o·h·l·c·v — the chart
+	/// draws it there and skips it in the indicator panes. `None` when the graph has no price node,
+	/// and then nothing is skipped.
 	pub price_node: Option<String>,
 }
 
@@ -109,16 +109,6 @@ pub struct ActivationFrame {
 	pub pending: bool,
 	pub ts_ns: i64,
 	pub activations: Vec<Activation>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
-pub struct BarOut {
-	pub ts_ms: i64,
-	pub open: f64,
-	pub high: f64,
-	pub low: f64,
-	pub close: f64,
-	pub volume: f64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]

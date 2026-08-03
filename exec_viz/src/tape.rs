@@ -13,7 +13,7 @@ use std::{
 
 use trading_data_dag::{Fire, Ink, Observer, Plot};
 
-use crate::api_types::{Activation, ActivationFrame, BarOut, DayOut, GuideOut, InkOut, PlotOut, PointOut, SeriesOut, TopoNode};
+use crate::api_types::{Activation, ActivationFrame, DayOut, GuideOut, InkOut, PlotOut, PointOut, SeriesOut, TopoNode};
 
 #[derive(Clone)]
 pub struct Viz(Arc<Mutex<Tape>>);
@@ -217,8 +217,16 @@ impl Tape {
 			.filter(|s| s.node.starts_with("Buffer<"))
 			.map(|s| (s.node.as_str(), s.deps.first().expect("a buffer has one dep").as_str()))
 			.collect();
+		// A typo in `price_node` would otherwise just quietly draw no candles; and the chart reads
+		// the node it names positionally, as o·h·l·c·v.
+		if let Some(p) = &self.price_node {
+			match self.series.iter().find(|s| &s.node == p) {
+				Some(s) => assert_eq!(s.dims.iter().product::<usize>(), 5, "price_node `{p}` must be an OHLCV bar"),
+				// within the first tick the node may simply not have been stepped yet
+				None => assert!(self.head() < 1, "price_node `{p}` names no node in the graph"),
+			}
+		}
 		DayOut {
-			bars: self.candles(),
 			series: self
 				.series
 				.iter()
@@ -230,32 +238,6 @@ impl Tape {
 				.collect(),
 			price_node: self.price_node.clone(),
 		}
-	}
-
-	/// The candle pane, read off the price node's own recording rather than pushed in beside it: a
-	/// bar is a node like any other, and an app that has one in its graph should not also have to
-	/// hold it as an output just to draw it. Bucketed on the same grid as every indicator, so a
-	/// candle and the lines derived from it sit on one x — a candle keyed by its open would not.
-	fn candles(&self) -> Vec<BarOut> {
-		let Some(price) = &self.price_node else { return Vec::new() };
-		let Some(s) = self.series.iter().find(|s| &s.node == price) else {
-			// Within the first tick the node may simply not have been stepped yet; once one has closed,
-			// a name that resolves to nothing is a typo in the app's `Viz::new`.
-			assert!(self.head() < 1, "price_node `{price}` names no node in the graph");
-			return Vec::new();
-		};
-		assert_eq!(s.dims.iter().product::<usize>(), 5, "price_node `{price}` must be an OHLCV bar");
-		s.points
-			.iter()
-			.map(|p| BarOut {
-				ts_ms: p.ts_ms,
-				open: p.vals[0],
-				high: p.vals[1],
-				low: p.vals[2],
-				close: p.vals[3],
-				volume: p.vals[4],
-			})
-			.collect()
 	}
 
 	pub(crate) fn frame(&self) -> ActivationFrame {

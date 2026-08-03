@@ -40,7 +40,7 @@ flowchart LR
 - `tape` — the whole model. `Viz` is a `Clone` handle over an `Arc<Mutex<Tape>>`: the
   recording side implements `Observer`, the read side is what the server scrubs. `Tape`
   holds the node `topology` (recorded once, on the first tick), the tick ring, the
-  downsampled per-node `series` (`price_node`'s doubling as the candles), and the cursor. Every replay op —
+  downsampled per-node `series` (`price_node`'s *is* the candle pane), and the cursor. Every replay op —
   `step`, `seek`, `seek_ts`, `step_until`, `step_until_change` — is a method here that
   moves the cursor and returns an `ActivationFrame`.
 - `server` — axum router and handlers, one thin `Json(...)` line each. Runtime-free:
@@ -93,9 +93,9 @@ The per-node chart series is *not* subject to any of this: it is downsampled onl
 
 ## Cross-cutting
 
-- **Fail loudly.** Boot failures panic (`EXEC_VIZ_WEB_DIR` unset, bind failure). Bars must
-  arrive closed and ascending — asserted, because lightweight-charts drops *every* series
-  it holds over one non-ascending point, silently, in a production build. The tape's mutex
+- **Fail loudly.** Boot failures panic (`EXEC_VIZ_WEB_DIR` unset, bind failure). A
+  `price_node` that names nothing, or names a node that is not five-wide, panics rather than
+  drawing an empty candle pane. The tape's mutex
   is deliberately un-poisonable: every op leaves it consistent, and a panicking handler
   must not cost the run its recording.
 - **Names are display-only.** `trim` shortens `type_name` strings by dropping module paths

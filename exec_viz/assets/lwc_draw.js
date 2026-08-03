@@ -314,15 +314,19 @@ export function draw(chart, data, viewSpec) {
   });
 
   const st = { series: [], tip: [], tt: null, ttMove: null, crosshair: null, click: null };
+  // The candle pane is a node's own recording, not a channel of its own: the price node's five
+  // slots read o·h·l·c·v. Bucketed like every other series, so a candle and the indicators derived
+  // from it sit on one x.
+  const bars = (data.series ?? []).find((s) => s.node === data.price_node)?.points ?? [];
   const candle = chart.addSeries(CandlestickSeries, { upColor: CANDLE, downColor: CANDLE, borderVisible: false, wickUpColor: CANDLE, wickDownColor: CANDLE }, 0);
-  candle.setData(data.bars.map((b) => ({ time: b.ts_ms / 1000, open: b.open, high: b.high, low: b.low, close: b.close })));
+  candle.setData(bars.map((b) => ({ time: b.ts_ms / 1000, open: b.vals[0], high: b.vals[1], low: b.vals[2], close: b.vals[3] })));
   st.series.push(candle);
-  tipFrom(st.tip, data.bars, (b) => b.ts_ms / 1000, (b) => `O ${fmt(b.open)}  H ${fmt(b.high)}  L ${fmt(b.low)}  C ${fmt(b.close)}`, 0, CANDLE);
+  tipFrom(st.tip, bars, (b) => b.ts_ms / 1000, (b) => `O ${fmt(b.vals[0])}  H ${fmt(b.vals[1])}  L ${fmt(b.vals[2])}  C ${fmt(b.vals[3])}`, 0, CANDLE);
 
   const vol = chart.addSeries(HistogramSeries, { color: "rgba(120,120,180,0.5)", priceScaleId: "right", priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false }, 1);
-  vol.setData(data.bars.map((b) => ({ time: b.ts_ms / 1000, value: b.volume })));
+  vol.setData(bars.map((b) => ({ time: b.ts_ms / 1000, value: b.vals[4] })));
   st.series.push(vol);
-  tipFrom(st.tip, data.bars, (b) => b.ts_ms / 1000, (b) => `V ${fmt(b.volume)}`, 1, "rgba(120,120,180,0.9)");
+  tipFrom(st.tip, bars, (b) => b.ts_ms / 1000, (b) => `V ${fmt(b.vals[4])}`, 1, "rgba(120,120,180,0.9)");
 
   addIndicatorPanes(chart, data, st);
   attachTooltip(chart.chartElement(), chart, st.tip, st);
@@ -344,7 +348,7 @@ export function draw(chart, data, viewSpec) {
   // Only the first draw with anything in it frames the data: under a live feed `draw` re-runs on
   // every refetch, and fitting again would throw away whatever the user had zoomed to. Kept off
   // `__ev`, which `teardown` clears at the top of every draw.
-  if (!chart.__evFitted && data.bars.length) {
+  if (!chart.__evFitted && bars.length) {
     chart.__evFitted = true;
     chart.timeScale().fitContent();
   }
