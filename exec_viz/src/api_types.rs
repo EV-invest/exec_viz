@@ -45,6 +45,7 @@ pub struct PlotOut {
 	pub overlay: bool,
 	pub solo: bool,
 	pub bars: bool,
+	pub candles: bool,
 }
 
 /// `detail` is the bucket's last fired `Debug` — the node's own composed view of the out, which the

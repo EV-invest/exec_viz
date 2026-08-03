@@ -270,13 +270,39 @@ function addIndicatorPanes(chart, data, st) {
     const n = s.slots.length;
     const label = (k) => s.plot.labels[k] ?? (n > 1 ? `[${k}]` : "");
     tipFrom(st.tip, s.points, (p) => p.ts_ms / 1000,
-      (p) => [
-        { text: s.node, color: oklch(ink(s, 0), hue(s, 0)) },
-        ...Array.from({ length: n }, (_, k) => ({ text: `  ${label(k) ? label(k) + " " : ""}${fmt(val(s, p, k))}`, color: oklch(ink(s, k), hue(s, k)) })),
-      ],
+      s.plot.candles
+        ? (p) => [{
+          text: `${s.node}  O ${fmt(val(s, p, 0))}  H ${fmt(val(s, p, 1))}  L ${fmt(val(s, p, 2))}  C ${fmt(val(s, p, 3))}`,
+          color: oklch(ink(s, 0), hue(s, 0)),
+        }]
+        : (p) => [
+          { text: s.node, color: oklch(ink(s, 0), hue(s, 0)) },
+          ...Array.from({ length: n }, (_, k) => ({ text: `  ${label(k) ? label(k) + " " : ""}${fmt(val(s, p, k))}`, color: oklch(ink(s, k), hue(s, k)) })),
+        ],
       0, null, (p) => p.detail);
     let guideHost = null;
-    for (let k = 0; k < n; k++) {
+    if (s.plot.candles) {
+      const c = oklch(ink(s, 0), hue(s, 0));
+      const cs = chart.addSeries(CandlestickSeries, {
+        priceScaleId: "right",
+        lastValueVisible: false,
+        priceLineVisible: false,
+        upColor: "rgba(0,0,0,0)",
+        downColor: "rgba(0,0,0,0)",
+        borderVisible: true,
+        borderUpColor: c,
+        borderDownColor: c,
+        wickUpColor: c,
+        wickDownColor: c,
+        // an overlay bar rides the price pane, it does not frame it — a 4h high would otherwise
+        // pull the scale off the 1m candles the pane is there to show.
+        autoscaleInfoProvider: () => null,
+      }, 0);
+      cs.setData(s.points.filter((p) => [0, 1, 2, 3].every((k) => Number.isFinite(val(s, p, k))))
+        .map((p) => ({ time: p.ts_ms / 1000, open: val(s, p, 0), high: val(s, p, 1), low: val(s, p, 2), close: val(s, p, 3) })));
+      st.series.push(cs);
+      guideHost = cs;
+    } else for (let k = 0; k < n; k++) {
       const line = chart.addSeries(LineSeries, { priceScaleId: "right", lastValueVisible: false, priceLineVisible: false, color: oklch(ink(s, k), hue(s, k)), lineWidth: 1 }, 0);
       line.setData(s.points.filter((p) => Number.isFinite(val(s, p, k))).map((p) => ({ time: p.ts_ms / 1000, value: val(s, p, k) })));
       st.series.push(line);

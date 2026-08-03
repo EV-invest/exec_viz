@@ -8,6 +8,7 @@
 
 use std::{
 	collections::{HashMap, VecDeque},
+	fmt::Write as _,
 	sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -32,6 +33,7 @@ impl Viz {
 			capacity,
 			bucket_ms,
 			topology: Vec::new(),
+			raw: Vec::new(),
 			ticks: VecDeque::new(),
 			opened: 0,
 			stride: 1,
@@ -40,11 +42,13 @@ impl Viz {
 			cursor: 0,
 			ts_ns: 0,
 			idx: 0,
+			scratch: String::new(),
 		})))
 	}
 
-	/// Opens a tick and hands itself back as the observer: `graph.tick_obs(batches, viz.at(ts))`.
-	pub fn at(&mut self, ts_ns: i64) -> &mut Self {
+	/// Opens a tick and hands back the recorder for it: `graph.tick_obs(ts, batches, &mut viz.at(ts))`.
+	/// The lock rides the returned [`Rec`], so a tick takes it once rather than once per fired node.
+	pub fn at(&mut self, ts_ns: i64) -> Rec<'_> {
 		let mut t = self.lock();
 		t.ts_ns = ts_ns;
 		t.idx = 0;
@@ -55,8 +59,7 @@ impl Viz {
 		let abs = t.opened;
 		t.opened += 1;
 		t.ticks.push_back(Tick { abs, ts_ns, acts: Vec::new() });
-		drop(t);
-		self
+		Rec(t)
 	}
 
 	/// Ends the recording: the tick `at` opened last becomes addressable and `total` stops growing.
@@ -72,9 +75,14 @@ impl Viz {
 	}
 }
 
-impl Observer for Viz {
+/// One opened tick's write handle: the tape's lock, held for the whole sweep. Handed to `tick_obs`
+/// by [`Viz::at`] and dropped at the end of that statement, which is what makes the tape readable
+/// again between ticks.
+pub struct Rec<'a>(MutexGuard<'a, Tape>);
+
+impl Observer for Rec<'_> {
 	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [bool], fire: Fire<'_>) {
-		let mut t = self.lock();
+		let t = &mut *self.0;
 		let i = t.idx;
 		t.idx += 1;
 		if t.topology.len() == i {
@@ -82,7 +90,7 @@ impl Observer for Viz {
 			// what both readers test membership against.
 			let gates: Vec<String> = deps.iter().zip(gates).filter(|(_, g)| **g).map(|(d, _)| trim(d)).collect();
 			let deps: Vec<String> = deps.iter().map(|d| buffered(&trim(d), &t.topology)).collect();
-			let node = TopoNode {
+			let topo = TopoNode {
 				node: trim(node),
 				deps,
 				gates,
@@ -90,19 +98,36 @@ impl Observer for Viz {
 				plots: fire.plots.iter().map(PlotOut::from).collect(),
 			};
 			t.series.push(SeriesOut {
-				node: node.node.clone(),
-				deps: node.deps.clone(),
-				gates: node.gates.clone(),
-				dims: node.dims.clone(),
-				plots: node.plots.clone(),
+				node: topo.node.clone(),
+				deps: topo.deps.clone(),
+				gates: topo.gates.clone(),
+				dims: topo.dims.clone(),
+				plots: topo.plots.clone(),
 				points: Vec::new(),
 			});
-			t.topology.push(node);
+			t.topology.push(topo);
+			t.raw.push(node);
 		} else {
-			assert_eq!(t.topology[i].node, trim(node), "step order shifted between ticks");
+			assert_eq!(t.raw[i], node, "step order shifted between ticks");
 		}
 
-		let detail = clip(&format!("{:?}", fire.debug));
+		// The glance goes first so one scratch serves both renderings: the detail has to outlive the
+		// series write below, the glance does not.
+		t.scratch.clear();
+		write!(t.scratch, "{}", fire.glance).expect("`String`'s `Write` is infallible");
+		let out: String = t.scratch.as_str().into();
+
+		t.scratch.clear();
+		write!(
+			Clip {
+				out: &mut t.scratch,
+				left: Some(DETAIL_MAX)
+			},
+			"{:?}",
+			fire.debug
+		)
+		.expect("`String`'s `Write` is infallible");
+
 		if let Some(vals) = fire.vals {
 			let ms = t.ts_ns / 1_000_000;
 			let bucket = ms - ms.rem_euclid(t.bucket_ms);
@@ -111,20 +136,21 @@ impl Observer for Viz {
 				// hour boundary weaves ahead of the tape around it), and one non-ascending point makes
 				// lightweight-charts drop *every* series it holds.
 				Some(p) if p.ts_ms >= bucket => {
-					p.vals = vals.to_vec();
-					p.detail.clone_from(&detail);
+					p.vals.clear();
+					p.vals.extend_from_slice(vals);
+					p.detail.clone_from(&t.scratch);
 				}
 				_ => t.series[i].points.push(PointOut {
 					ts_ms: bucket,
 					vals: vals.to_vec(),
-					detail: detail.clone(),
+					detail: t.scratch.clone(),
 				}),
 			}
 		}
 
 		let act = Act {
-			out: format!("{}", fire.glance),
-			detail,
+			out,
+			detail: t.scratch.as_str().into(),
 			vals: fire.vals.map(<[f64]>::to_vec),
 			jac: fire.jac.map(<[f64]>::to_vec),
 		};
@@ -152,6 +178,9 @@ pub(crate) struct Tape {
 	capacity: usize,
 	bucket_ms: i64,
 	topology: Vec<TopoNode>,
+	/// `topology`'s untrimmed names, positional with it. Kept apart from [`TopoNode`], which is a wire
+	/// type: the per-fire step-order check is a `&'static str` compare against this, not a re-[`trim`].
+	raw: Vec<&'static str>,
 	/// Ascending by `abs`, fewer than `capacity` of them — see [`Tape::thin`].
 	ticks: VecDeque<Tick>,
 	/// Ticks ever opened, thinned-away ones included.
@@ -167,6 +196,8 @@ pub(crate) struct Tape {
 	ts_ns: i64,
 	/// Per-tick step counter: step order is identical every tick, so it doubles as node id.
 	idx: usize,
+	/// Reused across every fire of every tick, so a rendering costs a memcpy rather than an alloc.
+	scratch: String,
 }
 
 impl Tape {
@@ -381,17 +412,41 @@ impl From<&Plot> for PlotOut {
 			overlay: p.overlay,
 			solo: p.solo,
 			bars: p.bars,
+			candles: p.candles,
 		}
 	}
 }
 
-/// ponytail: the hover tooltip is a study aid, and a root's `Debug` is its whole arrival batch —
-/// unclipped, one tick of a busy feed outweighs a thousand quiet ones.
-fn clip(detail: &str) -> String {
-	const MAX: usize = 256;
-	match detail.char_indices().nth(MAX) {
-		Some((i, _)) => format!("{}…", &detail[..i]),
-		None => detail.to_string(),
+/// The hover tooltip is a study aid, and a root's `Debug` is its whole arrival batch: unclipped, one
+/// tick of a busy feed outweighs a thousand quiet ones.
+const DETAIL_MAX: usize = 256;
+
+/// A [`fmt::Write`](core::fmt::Write) sink that stops accepting after `DETAIL_MAX` chars, so a huge
+/// `Debug` is abandoned mid-render rather than built in full and then thrown away.
+struct Clip<'a> {
+	out: &'a mut String,
+	/// Chars still accepted; `None` once the ellipsis is in and everything after it is dropped.
+	left: Option<usize>,
+}
+
+impl core::fmt::Write for Clip<'_> {
+	fn write_str(&mut self, s: &str) -> core::fmt::Result {
+		let Some(left) = self.left else { return Ok(()) };
+		if s.is_empty() {
+			return Ok(());
+		}
+		match s.char_indices().nth(left) {
+			Some((i, _)) => {
+				self.out.push_str(&s[..i]);
+				self.out.push('…');
+				self.left = None;
+			}
+			None => {
+				self.left = Some(left - s.chars().count());
+				self.out.push_str(s);
+			}
+		}
+		Ok(())
 	}
 }
 
@@ -465,6 +520,33 @@ mod tests {
 			formula: None,
 			deriv: None,
 			trace: None,
+		}
+	}
+
+	/// `Clip` sees a `Debug` as whatever chunks its `fmt` happens to emit, so what it must agree with
+	/// is the one-shot clip of the whole rendering — including the boundary case where the chunks end
+	/// exactly on `DETAIL_MAX` and the ellipsis is owed to the *next* one.
+	#[test]
+	fn a_chunked_debug_clips_where_the_whole_one_would() {
+		let whole = |s: &str| match s.char_indices().nth(DETAIL_MAX) {
+			Some((i, _)) => format!("{}…", &s[..i]),
+			None => s.to_string(),
+		};
+		for chunk in [1, 7, DETAIL_MAX - 1, DETAIL_MAX, DETAIL_MAX + 1] {
+			for total in [0, 1, DETAIL_MAX - 1, DETAIL_MAX, DETAIL_MAX + 1, 4 * DETAIL_MAX] {
+				// multi-byte, so a naive byte-indexed clip would slice a char in half.
+				let src: String = "aé✓".chars().cycle().take(total).collect();
+				let mut got = String::new();
+				let mut clip = Clip {
+					out: &mut got,
+					left: Some(DETAIL_MAX),
+				};
+				let cs: Vec<char> = src.chars().collect();
+				for part in cs.chunks(chunk) {
+					clip.write_str(&part.iter().collect::<String>()).expect("infallible");
+				}
+				assert_eq!(got, whole(&src), "chunk={chunk} total={total}");
+			}
 		}
 	}
 
