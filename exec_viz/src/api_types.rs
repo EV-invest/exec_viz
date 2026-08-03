@@ -47,10 +47,15 @@ pub struct PlotOut {
 	pub bars: bool,
 }
 
+/// `detail` is the bucket's last fired `Debug` — the node's own composed view of the out, which the
+/// chart tooltip shows in place of nothing when the crosshair is in that node's pane. A flat row of
+/// `vals` is all the tooltip could otherwise say, and a node that wrote a `Debug` wrote it for
+/// exactly this read.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PointOut {
 	pub ts_ms: i64,
 	pub vals: Vec<f64>,
+	pub detail: String,
 }
 
 /// One node's full-day output sampled once per 1m bucket (last fired value wins). `deps` lets

@@ -102,6 +102,7 @@ impl Observer for Viz {
 			assert_eq!(t.topology[i].node, trim(node), "step order shifted between ticks");
 		}
 
+		let detail = clip(&format!("{:?}", fire.debug));
 		if let Some(vals) = fire.vals {
 			let ms = t.ts_ns / 1_000_000;
 			let bucket = ms - ms.rem_euclid(t.bucket_ms);
@@ -109,14 +110,21 @@ impl Observer for Viz {
 				// `>=`, not `==`: a feed's timestamps do go backwards (a coarse lane landing on an exact
 				// hour boundary weaves ahead of the tape around it), and one non-ascending point makes
 				// lightweight-charts drop *every* series it holds.
-				Some(p) if p.ts_ms >= bucket => p.vals = vals.to_vec(),
-				_ => t.series[i].points.push(PointOut { ts_ms: bucket, vals: vals.to_vec() }),
+				Some(p) if p.ts_ms >= bucket => {
+					p.vals = vals.to_vec();
+					p.detail.clone_from(&detail);
+				}
+				_ => t.series[i].points.push(PointOut {
+					ts_ms: bucket,
+					vals: vals.to_vec(),
+					detail: detail.clone(),
+				}),
 			}
 		}
 
 		let act = Act {
 			out: format!("{}", fire.glance),
-			detail: clip(&format!("{:?}", fire.debug)),
+			detail,
 			vals: fire.vals.map(<[f64]>::to_vec),
 			jac: fire.jac.map(<[f64]>::to_vec),
 		};

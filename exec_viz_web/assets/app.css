@@ -353,6 +353,12 @@ html, body, #main {
   max-width: 60%;
 }
 
+/* The hovered pane's node speaking for itself, under its own value row. */
+.tooltip .detail {
+  color: #9aa4b6;
+  padding-left: 2px;
+}
+
 .dag-out {
   font-family: monospace;
   font-size: 11px;
