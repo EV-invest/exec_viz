@@ -60,6 +60,8 @@ tokio::join!(viz.clone().serve_on(listener), async {
 
 **The recording is not on your thread.** A finished tick crosses to a tape thread over a bounded channel, and that thread does the naming, bucketing, thinning and cost accounting; the graph pays a `Display`, a clipped `Debug` and one push, into buffers the tape hands back. `Backpressure` says what a full channel means: `Block` for a replay, which wants the whole tape and whose feed will wait, and `Drop` for a live run, where a fill must never queue behind a study aid — dropped ticks are counted into `ActivationFrame::dropped` rather than passing for a quiet market.
 
+**Optionally, the tape is also a file.** With the `record` feature, `Viz::recorded(.., root, run_id)` has the tape thread write `{root}/runs/{run_id}/` as it absorbs: `ticks.arrow` (one row per node per tick — *every* tick, thinned-away ones included), `series.arrow` and `topology.json`. Batches are cut on bytes-or-age and flushed as they are cut, so a run that dies keeps everything up to its last cut. Off by default: it is `arrow` that costs, not the writing.
+
 **The tape is the storage.** A live run cannot be re-run, so ticks are kept rather than replayed-by-rewinding. Past `capacity`, the buffer *thins* instead of dropping its front: the newest `capacity / 2` ticks stay whole, and everything older is decimated to every `stride`-th tick (`stride` only doubles). A run many times the capacity stays walkable end to end, with the freshest stretch still tick-exact — where a plain ring would make the beginning of a long recording unreachable for the rest of the run. The per-node series the chart draws is downsampled online into `bucket_ms` buckets and never dropped.
 
 #### The view
