@@ -6,9 +6,9 @@
 //! age rather than forgetting its front; the per-node series the chart draws is downsampled online
 //! and never dropped.
 //!
-//! The two halves do not share a thread. The graph's leg of a fire is a `Display` and a clipped
-//! `Debug` into a recycled buffer plus one channel push; naming the topology, bucketing the series,
-//! thinning and the cost statistics all happen on the tape thread, off the trading core.
+//! The two halves do not share a thread. The graph's leg of a fire is one `Glance` into a recycled
+//! buffer plus one channel push; naming the topology, bucketing the series, thinning and the cost
+//! statistics all happen on the tape thread, off the trading core.
 
 use std::{
 	collections::{HashMap, VecDeque},
@@ -29,9 +29,6 @@ use crate::{
 	cost::{Clock, Cost, TICK_STRIDE},
 };
 
-/// The hover tooltip is a study aid, and a root's `Debug` is its whole arrival batch: unclipped, one
-/// tick of a busy feed outweighs a thousand quiet ones.
-const DETAIL_MAX: usize = 256;
 /// Ticks the tape thread may lag by before the handoff is felt. Deep enough that a thinning pass —
 /// the one O(capacity) thing the consumer does — is absorbed rather than reflected back at the feed.
 const QUEUE: usize = 1024;
@@ -126,7 +123,7 @@ impl Viz {
 pub struct Recorder {
 	tx: SyncSender<TickMsg>,
 	/// Drained `Vec<Act>` coming back from the tape with their `String` and `Vec` capacities intact,
-	/// which is what makes a fire's two renderings a memcpy rather than an allocation.
+	/// which is what makes a fire's rendering a memcpy rather than an allocation.
 	recycle: Receiver<Vec<Act>>,
 	join: JoinHandle<()>,
 	mode: Backpressure,
@@ -223,17 +220,6 @@ impl Observer for Rec<'_> {
 		let act = &mut r.acts[i];
 		act.out.clear();
 		write!(act.out, "{}", fire.glance).expect("`String`'s `Write` is infallible");
-		act.detail.clear();
-		// The `Err` is [`Clip`] reporting that it has seen enough, and `String` has no other failure —
-		// discarded because stopping the render early is the entire point of asking.
-		let _ = write!(
-			Clip {
-				out: &mut act.detail,
-				left: Some(DETAIL_MAX)
-			},
-			"{:?}",
-			fire.debug
-		);
 		refill(&mut act.vals, fire.vals);
 		refill(&mut act.jac, fire.jac);
 
@@ -311,7 +297,6 @@ struct TickMsg {
 #[derive(Default)]
 pub(crate) struct Act {
 	pub(crate) out: String,
-	pub(crate) detail: String,
 	pub(crate) vals: Option<Vec<f64>>,
 	pub(crate) jac: Option<Vec<f64>>,
 }
@@ -392,13 +377,8 @@ impl Tape {
 				Some(p) if p.ts_ms >= bucket => {
 					p.vals.clear();
 					p.vals.extend_from_slice(vals);
-					p.detail.clone_from(&a.detail);
 				}
-				_ => self.series[i].points.push(PointOut {
-					ts_ms: bucket,
-					vals: vals.clone(),
-					detail: a.detail.clone(),
-				}),
+				_ => self.series[i].points.push(PointOut { ts_ms: bucket, vals: vals.clone() }),
 			}
 		}
 
@@ -528,7 +508,6 @@ impl Tape {
 							deps: n.deps.clone(),
 							gates: n.gates.clone(),
 							out: held.out.clone(),
-							detail: held.detail.clone(),
 							fired: a.vals.is_some(),
 							dims: n.dims.clone(),
 							vals: held.vals.as_ref().map(|v| v.iter().map(|x| x.is_finite().then_some(*x)).collect()),
@@ -644,37 +623,6 @@ impl From<&Plot> for PlotOut {
 	}
 }
 
-/// A [`fmt::Write`](core::fmt::Write) sink that stops accepting after `DETAIL_MAX` chars. It reports
-/// the clip as `Err`, because a `Formatter`'s error is the only thing that stops a `Debug` mid-render
-/// — without it a batch root still walks and renders every element, and only then is truncated.
-struct Clip<'a> {
-	out: &'a mut String,
-	/// Chars still accepted; `None` once the ellipsis is in.
-	left: Option<usize>,
-}
-
-impl core::fmt::Write for Clip<'_> {
-	fn write_str(&mut self, s: &str) -> core::fmt::Result {
-		let Some(left) = self.left else { return Err(core::fmt::Error) };
-		if s.is_empty() {
-			return Ok(());
-		}
-		match s.char_indices().nth(left) {
-			Some((i, _)) => {
-				self.out.push_str(&s[..i]);
-				self.out.push('…');
-				self.left = None;
-				Err(core::fmt::Error)
-			}
-			None => {
-				self.left = Some(left - s.chars().count());
-				self.out.push_str(s);
-				Ok(())
-			}
-		}
-	}
-}
-
 /// `Buffering<X, J>` names a *shape*, not a frame node — the node the client must draw the edge to
 /// is the `Buffer<X, K>` that serves it. A buffer always precedes its consumers in step order, so
 /// `topology` already holds it. Non-`Buffering` deps pass through.
@@ -745,36 +693,6 @@ mod tests {
 			formula: None,
 			deriv: None,
 			trace: None,
-		}
-	}
-
-	/// `Clip` sees a `Debug` as whatever chunks its `fmt` happens to emit, so what it must agree with
-	/// is the one-shot clip of the whole rendering — including the boundary case where the chunks end
-	/// exactly on `DETAIL_MAX` and the ellipsis is owed to the *next* one.
-	#[test]
-	fn a_chunked_debug_clips_where_the_whole_one_would() {
-		let whole = |s: &str| match s.char_indices().nth(DETAIL_MAX) {
-			Some((i, _)) => format!("{}…", &s[..i]),
-			None => s.to_string(),
-		};
-		for chunk in [1, 7, DETAIL_MAX - 1, DETAIL_MAX, DETAIL_MAX + 1] {
-			for total in [0, 1, DETAIL_MAX - 1, DETAIL_MAX, DETAIL_MAX + 1, 4 * DETAIL_MAX] {
-				// multi-byte, so a naive byte-indexed clip would slice a char in half.
-				let src: String = "aé✓".chars().cycle().take(total).collect();
-				let mut got = String::new();
-				let mut clip = Clip {
-					out: &mut got,
-					left: Some(DETAIL_MAX),
-				};
-				let cs: Vec<char> = src.chars().collect();
-				// `Err` is the stop signal a real `Debug` obeys via `?`; the loop obeys it the same way.
-				for part in cs.chunks(chunk) {
-					if clip.write_str(&part.iter().collect::<String>()).is_err() {
-						break;
-					}
-				}
-				assert_eq!(got, whole(&src), "chunk={chunk} total={total}");
-			}
 		}
 	}
 

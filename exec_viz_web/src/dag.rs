@@ -95,10 +95,26 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	});
 
 	let frame = state::FRAME();
-	let acts: HashMap<String, (bool, String, String, Option<Vec<Option<f64>>>)> = frame
+	let acts: HashMap<String, (bool, String, Option<Vec<Option<f64>>>)> = frame
 		.iter()
 		.flat_map(|f| f.activations.iter())
-		.map(|a| (a.node.clone(), (a.fired, a.out.clone(), a.detail.clone(), a.vals.clone())))
+		.map(|a| (a.node.clone(), (a.fired, a.out.clone(), a.vals.clone())))
+		.collect();
+	// `plots[].labels` indexed through `plots[].slots` (empty `slots` claims all of them) — the names
+	// the hover tips read a node's values out under, and the same ones the chart crosshair prints.
+	let names: HashMap<String, Vec<String>> = topology
+		.iter()
+		.map(|n| {
+			let len: usize = n.dims.iter().product();
+			let mut named = vec![String::new(); len];
+			for p in &n.plots {
+				let slots: Vec<usize> = if p.slots.is_empty() { (0..len).collect() } else { p.slots.clone() };
+				for (k, s) in slots.into_iter().enumerate() {
+					named[s] = p.labels.get(k).cloned().unwrap_or_default();
+				}
+			}
+			(n.node.clone(), named)
+		})
 		.collect();
 	let hovered_deps: Vec<String> = hover()
 		.node()
@@ -113,7 +129,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 				div { class: "dag-col",
 					for n in col {
 						{
-							let (fired, out, detail, vals) = acts.get(&n.node).cloned().unwrap_or((false, String::new(), String::new(), None));
+							let (fired, out, vals) = acts.get(&n.node).cloned().unwrap_or((false, String::new(), None));
 							let dep_hl = hovered_deps.contains(&n.node);
 							let selected = state::SELECTED().contains(&n.node);
 							let class = format!(
@@ -144,7 +160,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 										{
 											let gt = topology.iter().find(|t| t.node == g).expect("gate listed in topology");
 											assert_eq!(gt.dims.iter().product::<usize>(), 1, "gate glyph assumes a scalar gate");
-											let (gfired, _, gdetail, gvals) = acts.get(&g).cloned().unwrap_or((false, String::new(), String::new(), None));
+											let (gfired, _, gvals) = acts.get(&g).cloned().unwrap_or((false, String::new(), None));
 											let open = gvals.as_ref().is_some_and(|v| v[0].is_some_and(|x| x != 0.0));
 											let gclass = format!(
 												"dag-gate{}{}",
@@ -189,8 +205,8 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 														"{txt}"
 													}
 													// the glyph is scalar, so the card's own hover already names the one cell
-													if !gdetail.is_empty() && hover() == Hover::Gate(n.node.clone(), g.clone()) {
-														div { class: "dag-tip", "{gdetail}" }
+													if let Some(t) = tip(&names[&g], gvals.as_deref()).filter(|_| hover() == Hover::Gate(n.node.clone(), g.clone())) {
+														div { class: "dag-tip", "{t}" }
 													}
 												}
 											}
@@ -226,7 +242,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 									// `dagel-` ids the Jacobian overlay measures against.
 									if let Some((buf, depth)) = hist.get(&n.node) {
 										{
-											let (bfired, _, bdetail, bvals) = acts.get(buf).cloned().unwrap_or((false, String::new(), String::new(), None));
+											let (bfired, _, bvals) = acts.get(buf).cloned().unwrap_or((false, String::new(), None));
 											let bclass = format!(
 												"dag-hist{}{}",
 												if bfired { " lit" } else { "" },
@@ -255,15 +271,15 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 															}
 														}
 													}
-													if !bdetail.is_empty() && hovered_node.as_deref() == Some(b.as_str()) {
-														div { class: "dag-tip", "{bdetail}" }
+													if let Some(t) = tip(&names[buf], bvals.as_deref()).filter(|_| hovered_node.as_deref() == Some(b.as_str())) {
+														div { class: "dag-tip", "{t}" }
 													}
 												}
 											}
 										}
 									}
-									if !detail.is_empty() && hovered_node.as_deref() == Some(node.as_str()) {
-										div { class: "dag-tip", "{detail}" }
+									if let Some(t) = tip(&names[&n.node], vals.as_deref()).filter(|_| hovered_node.as_deref() == Some(node.as_str())) {
+										div { class: "dag-tip", "{t}" }
 									}
 								}
 							}
@@ -399,6 +415,18 @@ fn heat(range: Option<&(f64, f64)>, v: f64) -> f64 {
 		_ => 0.5,
 	};
 	0.12 + 0.55 * t
+}
+
+/// A node's flat out read out under its slots' names, one per line — what the hover has to say, and
+/// what the chart's crosshair already prints beside the same series. `None` before the node's first
+/// fire, which is when there is nothing to read out.
+fn tip(names: &[String], vals: Option<&[Option<f64>]>) -> Option<String> {
+	let vals = vals?;
+	let line = |(k, v): (usize, &Option<f64>)| {
+		let name = names.get(k).filter(|n| !n.is_empty()).map_or_else(|| format!("[{k}]"), String::clone);
+		format!("{name}  {}", v.map_or_else(|| "·".to_string(), fmt_val))
+	};
+	Some(vals.iter().enumerate().map(line).collect::<Vec<_>>().join("\n"))
 }
 
 fn fmt_val(v: f64) -> String {

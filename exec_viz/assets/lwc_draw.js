@@ -48,14 +48,11 @@ function fmt(v) {
   return v.toPrecision(4);
 }
 
-// `detailOf` is the row's own `Debug` view, shown only for the pane the crosshair is in: every
-// series in the chart contributes a line to the one tooltip, and a multi-line view per node would
-// bury the read it was written for.
-function tipFrom(tip, rows, timeOf, textOf, pane, color, detailOf) {
+function tipFrom(tip, rows, timeOf, textOf, pane, color) {
   const m = new Map();
   for (const r of rows) {
     const t = textOf(r);
-    if (t != null) m.set(timeOf(r), { text: t, detail: detailOf?.(r) });
+    if (t != null) m.set(timeOf(r), { text: t });
   }
   tip.push({ map: m, pane, color });
 }
@@ -78,7 +75,7 @@ function attachTooltip(div, chart, tip, state) {
       tt.style.display = "none";
       return;
     }
-    tt.replaceChildren(...lines.flatMap((l) => {
+    tt.replaceChildren(...lines.map((l) => {
       const d = document.createElement("div");
       if (Array.isArray(l.text)) {
         for (const seg of l.text) {
@@ -91,13 +88,8 @@ function attachTooltip(div, chart, tip, state) {
         d.textContent = l.text;
         if (l.color) d.style.color = l.color;
       }
-      const own = param.paneIndex == null || l.pane === param.paneIndex;
-      if (!own) d.style.opacity = "0.35";
-      if (!own || !l.detail) return [d];
-      const det = document.createElement("div");
-      det.className = "detail";
-      det.textContent = l.detail;
-      return [d, det];
+      if (param.paneIndex != null && l.pane !== param.paneIndex) d.style.opacity = "0.35";
+      return d;
     }));
     tt.style.display = "block";
   };
@@ -220,7 +212,7 @@ function addIndicatorPanes(chart, data, st) {
           { text: s.node, color: oklch(ink(s, 0), hue(s, 0)) },
           ...Array.from({ length: n }, (_, k) => ({ text: `  ${label(k) ? label(k) + " " : ""}${fmt(val(s, p, k))}`, color: oklch(ink(s, k), hue(s, k)) })),
         ],
-        pane, null, (p) => p.detail);
+        pane);
       let guideHost = null;
       if (s.plot.bars) {
         // stacked histogram: per-point cumulative segments, largest drawn first so each later
@@ -279,7 +271,7 @@ function addIndicatorPanes(chart, data, st) {
           { text: s.node, color: oklch(ink(s, 0), hue(s, 0)) },
           ...Array.from({ length: n }, (_, k) => ({ text: `  ${label(k) ? label(k) + " " : ""}${fmt(val(s, p, k))}`, color: oklch(ink(s, k), hue(s, k)) })),
         ],
-      0, null, (p) => p.detail);
+      0);
     let guideHost = null;
     if (s.plot.candles) {
       const c = oklch(ink(s, 0), hue(s, 0));
