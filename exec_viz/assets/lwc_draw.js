@@ -139,6 +139,48 @@ class CursorPrimitive {
   }
 }
 
+// lightweight-charts draws every series at the one bar spacing, so a node clocked slower than the
+// chart's bucket comes out a bucket wide — a 1h bar as a spike between the 1m candles it spans.
+// Drawn as a primitive on the price series instead: outlines `span` buckets wide, reaching back from
+// the close each bar is stamped at.
+class SpanCandles {
+  constructor(bars, span, color) { this._bars = bars; this._span = span; this._color = color; }
+  attached({ chart, series }) { this._chart = chart; this._series = series; }
+  detached() {}
+  updateAllViews() {}
+  paneViews() { return [{ zOrder: () => "top", renderer: () => this._renderer() }]; }
+  _renderer() {
+    const ts = this._chart.timeScale();
+    const series = this._series;
+    const bars = this._bars;
+    const span = this._span;
+    const color = this._color;
+    return {
+      draw: (target) => target.useMediaCoordinateSpace(({ context: ctx }) => {
+        const bs = ts.options().barSpacing;
+        const half = Math.max(0.5, bs * 0.4);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        for (const b of bars) {
+          // a bar whose close sits off the chart's own time grid has no x to be drawn at
+          const close = ts.timeToCoordinate(b.time);
+          if (close == null) continue;
+          const [x0, x1] = [close - bs * (span - 1) - half, close + half];
+          const y = (v) => series.priceToCoordinate(v);
+          const [o, h, l, c] = [y(b.open), y(b.high), y(b.low), y(b.close)];
+          if (o == null || h == null || l == null || c == null) continue;
+          const mid = Math.round((x0 + x1) / 2) + 0.5;
+          ctx.beginPath();
+          ctx.moveTo(mid, h);
+          ctx.lineTo(mid, l);
+          ctx.stroke();
+          ctx.strokeRect(Math.round(x0) + 0.5, Math.round(Math.min(o, c)) + 0.5, Math.round(x1 - x0), Math.max(1, Math.round(Math.abs(c - o))));
+        }
+      }),
+    };
+  }
+}
+
 function teardown(chart) {
   const st = chart.__ev;
   if (!st) return;
@@ -154,7 +196,7 @@ function teardown(chart) {
 // own price scale (layers mix units — RSI 0–100 next to λ ~1e-6), except plots asking to be `solo`,
 // which take a pane of their own right under their layer's. Gate nodes get one dedicated pane at
 // the bottom instead: 0/1 square waves on the shared time axis.
-function addIndicatorPanes(chart, data, st) {
+function addIndicatorPanes(chart, data, st, price) {
   const series = data.series ?? [];
   const depth = new Map();
   // the server contracts hidden nodes out of `deps`, so every name resolves; a miss would otherwise
@@ -179,6 +221,7 @@ function addIndicatorPanes(chart, data, st) {
     plot,
     slots: plot.slots.length ? plot.slots : Array.from({ length: len(s) }, (_, k) => k),
     points: s.points,
+    clock_ms: s.clock_ms,
   }));
   // roots (depth 0) and the candle source are the price chart itself, not indicators.
   const drawable = series.filter((s) => depth.get(s.node) >= 1 && s.node !== data.price_node).flatMap(explode);
@@ -274,26 +317,15 @@ function addIndicatorPanes(chart, data, st) {
       0);
     let guideHost = null;
     if (s.plot.candles) {
-      const c = oklch(ink(s, 0), hue(s, 0));
-      const cs = chart.addSeries(CandlestickSeries, {
-        priceScaleId: "right",
-        lastValueVisible: false,
-        priceLineVisible: false,
-        upColor: "rgba(0,0,0,0)",
-        downColor: "rgba(0,0,0,0)",
-        borderVisible: true,
-        borderUpColor: c,
-        borderDownColor: c,
-        wickUpColor: c,
-        wickDownColor: c,
-        // an overlay bar rides the price pane, it does not frame it — a 4h high would otherwise
-        // pull the scale off the 1m candles the pane is there to show.
-        autoscaleInfoProvider: () => null,
-      }, 0);
-      cs.setData(s.points.filter((p) => [0, 1, 2, 3].every((k) => Number.isFinite(val(s, p, k))))
-        .map((p) => ({ time: p.ts_ms / 1000, open: val(s, p, 0), high: val(s, p, 1), low: val(s, p, 2), close: val(s, p, 3) })));
-      st.series.push(cs);
-      guideHost = cs;
+      // an unclocked node publishes whenever its inputs do, so one bucket is the width it covers.
+      const span = Math.max(1, Math.round((s.clock_ms ?? BUCKET_SEC * 1000) / (BUCKET_SEC * 1000)));
+      const bars = s.points.filter((p) => [0, 1, 2, 3].every((k) => Number.isFinite(val(s, p, k))))
+        .map((p) => ({ time: p.ts_ms / 1000, open: val(s, p, 0), high: val(s, p, 1), low: val(s, p, 2), close: val(s, p, 3) }));
+      // Drawn over the price series rather than as one of its own: an overlay bar rides the price
+      // pane, it does not frame it — a 4h high would otherwise pull the scale off the 1m candles the
+      // pane is there to show — and only a primitive can be wider than one bucket.
+      price.attachPrimitive(new SpanCandles(bars, span, oklch(ink(s, 0), hue(s, 0))));
+      guideHost = price;
     } else for (let k = 0; k < n; k++) {
       const line = chart.addSeries(LineSeries, { priceScaleId: "right", lastValueVisible: false, priceLineVisible: false, color: oklch(ink(s, k), hue(s, k)), lineWidth: 1 }, 0);
       line.setData(s.points.filter((p) => Number.isFinite(val(s, p, k))).map((p) => ({ time: p.ts_ms / 1000, value: val(s, p, k) })));
@@ -357,7 +389,7 @@ export function draw(chart, data, viewSpec, lib) {
   st.series.push(vol);
   tipFrom(st.tip, bars, (b) => b.ts_ms / 1000, (b) => `V ${fmt(b.vals[4])}`, 1, "rgba(120,120,180,0.9)");
 
-  addIndicatorPanes(chart, data, st);
+  addIndicatorPanes(chart, data, st, candle);
   attachTooltip(chart.chartElement(), chart, st.tip, st);
 
   chart.panes().forEach((p, i) => p.setStretchFactor(i === 0 ? 3 : i === st.gatePane ? 0.5 : 1));

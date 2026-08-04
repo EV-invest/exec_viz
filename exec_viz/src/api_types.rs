@@ -72,6 +72,10 @@ pub struct SeriesOut {
 	pub dims: Vec<usize>,
 	pub plots: Vec<PlotOut>,
 	pub points: Vec<PointOut>,
+	/// The node's declared clock in ms — the period one point *covers*, not the bucket it was sampled
+	/// into. `None` for a node that publishes whenever its inputs do. This is what lets the chart draw
+	/// a 1h candle a full hour wide on a 1m grid.
+	pub clock_ms: Option<i64>,
 }
 
 /// The `/api/day` chart payload, opaque to both the server and the wasm client (the chart shim is

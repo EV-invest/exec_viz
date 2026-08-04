@@ -209,6 +209,7 @@ impl Observer for Rec<'_> {
 				gates,
 				dims: fire.dims,
 				plots: fire.plots,
+				clock_ms: fire.clock.map(|tf| tf.duration().as_millis() as i64),
 			});
 		} else {
 			assert_eq!(r.raw[i], node, "step order shifted between ticks");
@@ -280,6 +281,7 @@ struct Meta {
 	gates: &'static [bool],
 	dims: &'static [usize],
 	plots: &'static [Plot],
+	clock_ms: Option<i64>,
 }
 
 struct TickMsg {
@@ -404,6 +406,7 @@ impl Tape {
 				dims: topo.dims.clone(),
 				plots: topo.plots.clone(),
 				points: Vec::new(),
+				clock_ms: m.clock_ms,
 			});
 			self.topology.push(topo);
 			self.cost.push(Cost::default());
@@ -733,6 +736,7 @@ mod tests {
 			glance: &f64::NAN,
 			dims: &[1],
 			plots: &[Plot::DEFAULT],
+			clock: None,
 			fires: 1,
 			vals: Some(vals),
 			dep_dims: &[],
