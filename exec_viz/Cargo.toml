@@ -17,15 +17,10 @@ default = ["server"]
 # The recording `Viz` observer + the axum server over it. Native only; with it off the crate is
 # just `api_types`, which is all the wasm front-end (`exec_viz_web`) needs.
 server = ["dep:axum", "dep:tokio", "dep:tower-http", "dep:trading_data_dag"]
-# Also write the tape to a `runs/{run_id}/` dir as it is recorded, so a finished run re-serves
-# without re-running the graph. Off by default: it is `arrow` that costs, not the writing.
-record = ["server", "dep:arrow", "dep:serde_json"]
 
 [dependencies]
-arrow = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 serde.workspace = true
-serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
 trading_data_dag = { workspace = true, optional = true }

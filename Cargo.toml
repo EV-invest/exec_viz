@@ -28,7 +28,6 @@ manual_is_multiple_of = "allow"
 unused_features = "allow"
 
 [workspace.dependencies]
-arrow = { version = "59", default-features = false, features = ["ipc"] }
 axum = "0.8"
 # --- web (Dioxus/wasm) frontend. wasm-bindgen pinned in lockstep with wasm-bindgen-cli (flake) and v_utils. ---
 dioxus = { version = "0.7", features = ["web"] }
@@ -40,7 +39,6 @@ gloo-net = { version = "0.7", features = ["http"] }
 gloo-timers = { version = "0.3", features = ["futures"] }
 js-sys = "0.3"
 serde = { version = "^1.0.228", features = ["derive"] }
-serde_json = "^1"
 tokio = { version = "^1", features = ["full"] }
 tower-http = { version = "0.6", features = ["fs", "set-header"] }
 trading_data_dag = { path = "../trading_data/trading_data_dag", version = "0.3.0" }

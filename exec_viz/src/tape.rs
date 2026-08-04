@@ -10,8 +10,6 @@
 //! `Debug` into a recycled buffer plus one channel push; naming the topology, bucketing the series,
 //! thinning and the cost statistics all happen on the tape thread, off the trading core.
 
-#[cfg(feature = "record")]
-use std::path::Path;
 use std::{
 	collections::{HashMap, VecDeque},
 	fmt::Write as _,
@@ -79,8 +77,6 @@ impl Viz {
 			dropped: dropped.clone(),
 			series: Vec::new(),
 			cursor: 0,
-			#[cfg(feature = "record")]
-			sink: None,
 		})));
 		let (tx, rx) = sync_channel(QUEUE);
 		let (back, recycle) = sync_channel(QUEUE);
@@ -94,7 +90,7 @@ impl Viz {
 					// want them back; dropping them here is exactly what it would have done.
 					freed.into_iter().try_for_each(|acts| back.try_send(acts)).ok();
 				}
-				tape.lock().close();
+				tape.lock().sealed = true;
 			})
 			.expect("spawn the tape thread");
 		(
@@ -116,18 +112,6 @@ impl Viz {
 				timed: false,
 			},
 		)
-	}
-
-	/// As [`Viz::new`], and the tape is also written to `{root}/runs/{run_id}/` as it is recorded —
-	/// see [`crate::record`]. The `run_id` is the app's, since only the app knows what tells one of
-	/// its runs from the next.
-	#[cfg(feature = "record")]
-	pub fn recorded(price_node: Option<&'static str>, capacity: usize, bucket_ms: i64, mode: Backpressure, root: &Path, run_id: &str) -> (Self, Recorder) {
-		let (viz, rec) = Self::new(price_node, capacity, bucket_ms, mode);
-		// The recorder is still here, so the tape thread has had nothing to absorb and the sink is in
-		// place for the first tick as much as for the last.
-		viz.lock().sink = Some(crate::record::Sink::new(root, run_id));
-		(viz, rec)
 	}
 
 	pub(crate) fn lock(&self) -> MutexGuard<'_, Tape> {
@@ -360,11 +344,6 @@ pub(crate) struct Tape {
 	/// Ticks consumed; the frame describes the one that consumed `cursor - 1`. Absolute, so a
 	/// thinning pass under a parked cursor cannot slide it.
 	cursor: usize,
-	/// The run dir this recording is also being written to — see [`crate::record`]. Every tick goes
-	/// to it, thinned-away ones included: what the buffer forgets is exactly what a re-served run
-	/// would otherwise have to re-run the graph to get back.
-	#[cfg(feature = "record")]
-	sink: Option<crate::record::Sink>,
 }
 
 impl Tape {
@@ -427,23 +406,8 @@ impl Tape {
 		debug_assert!(self.ticks.len() < self.capacity);
 		let abs = self.opened;
 		self.opened += 1;
-		#[cfg(feature = "record")]
-		if let Some(s) = &mut self.sink {
-			s.name(&self.topology);
-			s.tick(abs, ts_ns, &acts);
-		}
 		self.ticks.push_back(Tick { abs, ts_ns, acts });
 		freed
-	}
-
-	/// The last sender is gone, so no tick will follow — the recording is over whether that was a
-	/// [`Recorder::seal`] or a live feed shutting down.
-	fn close(&mut self) {
-		self.sealed = true;
-		#[cfg(feature = "record")]
-		if let Some(s) = self.sink.take() {
-			s.finish(&self.series);
-		}
 	}
 
 	/// What the buffer keeps: the newest `capacity / 2` ticks whole, plus every `stride`-th tick over
