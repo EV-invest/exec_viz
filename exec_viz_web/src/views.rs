@@ -139,6 +139,11 @@ pub fn Replay() -> Element {
 						rsx! {
 							span { class: "pos", "event {f.tick}/{f.total}{growing}" }
 							span { class: "pos", "{fmt_ts(f.ts_ns)}" }
+							// A tape the run outran has holes in it; saying so is the difference between
+							// reading a gap as a quiet market and reading it as a gap.
+							if f.dropped > 0 {
+								span { class: "pos warn", "{f.dropped} dropped" }
+							}
 						}
 					}
 					None => rsx! {

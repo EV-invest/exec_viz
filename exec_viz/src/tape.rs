@@ -1,15 +1,24 @@
-//! The attach surface: [`Viz`] is an [`Observer`] the app hands to its own `tick_obs`, plus the
-//! shared read side the server scrubs. Cloning shares the tape.
+//! The attach surface: [`Recorder`] is the [`Observer`] the app hands to its own `tick_obs`, and
+//! [`Viz`] is the shared read side the server scrubs. Cloning a [`Viz`] shares the tape.
 //!
 //! Live-first, so the recording *is* the storage: a live run can't be re-run, which is what the
 //! old replay-by-rewinding-the-graph model assumed. Ticks land in a bounded buffer that thins with
 //! age rather than forgetting its front; the per-node series the chart draws is downsampled online
 //! and never dropped.
+//!
+//! The two halves do not share a thread. The graph's leg of a fire is a `Display` and a clipped
+//! `Debug` into a recycled buffer plus one channel push; naming the topology, bucketing the series,
+//! thinning and the cost statistics all happen on the tape thread, off the trading core.
 
 use std::{
 	collections::{HashMap, VecDeque},
 	fmt::Write as _,
-	sync::{Arc, Mutex, MutexGuard},
+	sync::{
+		Arc, Mutex, MutexGuard,
+		atomic::{AtomicUsize, Ordering},
+		mpsc::{Receiver, SyncSender, TrySendError, sync_channel},
+	},
+	thread::JoinHandle,
 	time::Instant,
 };
 
@@ -23,6 +32,22 @@ use crate::{
 /// The hover tooltip is a study aid, and a root's `Debug` is its whole arrival batch: unclipped, one
 /// tick of a busy feed outweighs a thousand quiet ones.
 const DETAIL_MAX: usize = 256;
+/// Ticks the tape thread may lag by before the handoff is felt. Deep enough that a thinning pass —
+/// the one O(capacity) thing the consumer does — is absorbed rather than reflected back at the feed.
+const QUEUE: usize = 1024;
+
+/// What a full handoff queue means for the tick being recorded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Backpressure {
+	/// Wait for room. A replay wants the whole tape and its feed is a file that is not going
+	/// anywhere.
+	Block,
+	/// Drop the tick and count it. A live fill must never wait on a study aid — and a drop that
+	/// nobody counted is indistinguishable from a quiet market, so [`ActivationFrame::dropped`]
+	/// carries the tally.
+	Drop,
+}
+
 #[derive(Clone)]
 pub struct Viz(Arc<Mutex<Tape>>);
 
@@ -33,53 +58,62 @@ impl Viz {
 	/// the graph already holds, and a hand-spelled one that matches nothing draws an empty chart.
 	/// `capacity` bounds the retained tick count — see [`Tape::thin`] for what a run longer than that
 	/// keeps — and `bucket_ms` is the chart's sample period.
-	pub fn new(price_node: Option<&'static str>, capacity: usize, bucket_ms: i64) -> Self {
+	///
+	/// Spawns the tape thread and hands back the read side and the one write side: a tape has many
+	/// readers and exactly one recorder, which is why they are different types.
+	pub fn new(price_node: Option<&'static str>, capacity: usize, bucket_ms: i64, mode: Backpressure) -> (Self, Recorder) {
 		assert!(capacity > 3 && bucket_ms > 0);
-		Self(Arc::new(Mutex::new(Tape {
+		let dropped = Arc::new(AtomicUsize::new(0));
+		let viz = Self(Arc::new(Mutex::new(Tape {
 			price_node: price_node.map(str::to_string),
 			capacity,
 			bucket_ms,
 			topology: Vec::new(),
-			raw: Vec::new(),
 			cost: Vec::new(),
-			clock: Clock::new(),
 			ticks: VecDeque::new(),
 			opened: 0,
 			stride: 1,
 			sealed: false,
+			dropped: dropped.clone(),
 			series: Vec::new(),
 			cursor: 0,
-			ts_ns: 0,
-			idx: 0,
-			scratch: String::new(),
-		})))
-	}
-
-	/// Opens a tick and hands back the recorder for it: `graph.tick_obs(ts, batches, &mut viz.at(ts))`.
-	/// The lock rides the returned [`Rec`], so a tick takes it once rather than once per fired node.
-	pub fn at(&mut self, ts_ns: i64) -> Rec<'_> {
-		let mut t = self.lock();
-		t.ts_ns = ts_ns;
-		t.idx = 0;
-		if t.ticks.len() == t.capacity {
-			t.thin();
-		}
-		debug_assert!(t.ticks.len() < t.capacity);
-		let abs = t.opened;
-		t.opened += 1;
-		t.ticks.push_back(Tick { abs, ts_ns, acts: Vec::new() });
-		let timed = abs % TICK_STRIDE == 0;
-		if timed {
-			// the sweep has not started, so the span the first node will close begins here.
-			t.clock.mark(Instant::now());
-		}
-		Rec { t, timed }
-	}
-
-	/// Ends the recording: the tick `at` opened last becomes addressable and `total` stops growing.
-	/// By value, so the handle you recorded through is spent. A live feed never calls this.
-	pub fn seal(self) {
-		self.lock().sealed = true;
+		})));
+		let (tx, rx) = sync_channel(QUEUE);
+		let (back, recycle) = sync_channel(QUEUE);
+		let tape = viz.clone();
+		let join = std::thread::Builder::new()
+			.name("exec_viz tape".into())
+			.spawn(move || {
+				for msg in rx {
+					let freed = tape.lock().absorb(msg);
+					// A full return channel is the recorder saying it is not allocating fast enough to
+					// want them back; dropping them here is exactly what it would have done.
+					freed.into_iter().try_for_each(|acts| back.try_send(acts)).ok();
+				}
+				// The last sender is gone, so no tick will follow — the recording is over whether that
+				// was a `seal` or a live feed shutting down.
+				tape.lock().sealed = true;
+			})
+			.expect("spawn the tape thread");
+		(
+			viz,
+			Recorder {
+				tx,
+				recycle,
+				join,
+				mode,
+				raw: Vec::new(),
+				meta: None,
+				acts: Vec::new(),
+				spans: Vec::new(),
+				clock: Clock::new(),
+				opened: 0,
+				dropped,
+				ts_ns: 0,
+				idx: 0,
+				timed: false,
+			},
+		)
 	}
 
 	pub(crate) fn lock(&self) -> MutexGuard<'_, Tape> {
@@ -89,14 +123,70 @@ impl Viz {
 	}
 }
 
-/// One opened tick's write handle: the tape's lock, held for the whole sweep. Handed to `tick_obs`
-/// by [`Viz::at`] and dropped at the end of that statement, which is what makes the tape readable
-/// again between ticks.
-pub struct Rec<'a> {
-	t: MutexGuard<'a, Tape>,
-	/// This tick is one of the clocked ones — see [`crate::cost`].
+/// The write side, and the only one: the graph thread's whole share of the recording. Not `Clone` —
+/// it owns the handoff to the tape thread and the buffers being recycled across it.
+pub struct Recorder {
+	tx: SyncSender<TickMsg>,
+	/// Drained `Vec<Act>` coming back from the tape with their `String` and `Vec` capacities intact,
+	/// which is what makes a fire's two renderings a memcpy rather than an allocation.
+	recycle: Receiver<Vec<Act>>,
+	join: JoinHandle<()>,
+	mode: Backpressure,
+	/// The stepped nodes' names, positional. The per-fire step-order check compares against this, and
+	/// its length is what says a node is new and still owes its [`Meta`].
+	raw: Vec<&'static str>,
+	/// Nodes stepped for the first time, held until the tick they appeared on is sent.
+	meta: Option<Vec<Meta>>,
+	acts: Vec<Act>,
+	spans: Vec<f64>,
+	/// Step-order span clock — see [`Cost`].
+	clock: Clock,
+	opened: usize,
+	/// Shared with the tape rather than sent with a tick: a burst of drops can run to the end of the
+	/// run, and then there is no next tick to carry the tally on.
+	dropped: Arc<AtomicUsize>,
+	ts_ns: i64,
+	/// Per-tick step counter: step order is identical every tick, so it doubles as node id.
+	idx: usize,
 	timed: bool,
 }
+
+impl Recorder {
+	/// Opens a tick and hands back the observer for it:
+	/// `graph.tick_obs(ts, batches, &mut recorder.at(ts))`. Dropping the returned [`Rec`] — at the end
+	/// of that statement — is what hands the finished tick to the tape thread.
+	pub fn at(&mut self, ts_ns: i64) -> Rec<'_> {
+		self.ts_ns = ts_ns;
+		self.idx = 0;
+		self.timed = self.opened % TICK_STRIDE == 0;
+		self.opened += 1;
+		if self.acts.is_empty() {
+			self.acts = self.recycle.try_recv().unwrap_or_default();
+		}
+		// A recycled buffer is already node-for-node; a freshly allocated one has to be made so, since
+		// after the first tick `on` addresses it by step index rather than pushing onto it.
+		self.acts.resize_with(self.raw.len(), Act::default);
+		if self.timed {
+			self.spans.clear();
+			// the sweep has not started, so the span the first node will close begins here.
+			self.clock.mark(Instant::now());
+		}
+		Rec(self)
+	}
+
+	/// Ends the recording: every tick still in flight is absorbed, the last one becomes addressable
+	/// and `total` stops growing. By value, so the handle you recorded through is spent. A live feed
+	/// never calls this — dropping the recorder says the same thing without the wait.
+	pub fn seal(self) {
+		let Recorder { tx, join, .. } = self;
+		drop(tx);
+		join.join().expect("the tape thread only ends by running out of ticks");
+	}
+}
+
+/// One opened tick's observer. Everything it writes goes into the recorder's recycled buffers; the
+/// tick crosses to the tape thread when this drops.
+pub struct Rec<'a>(&'a mut Recorder);
 
 impl Observer for Rec<'_> {
 	/// A Jacobian is read by exactly one thing — [`Tape::frame`], for the single tick a client is
@@ -109,95 +199,118 @@ impl Observer for Rec<'_> {
 	}
 
 	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [bool], fire: Fire<'_>) {
-		let entry = self.timed.then(Instant::now);
-		let t = &mut *self.t;
-		let i = t.idx;
-		t.idx += 1;
-		if t.topology.len() == i {
-			// names rather than the positional flags: on the wire `gates` is a subset of `deps`, which is
-			// what both readers test membership against.
-			let gates: Vec<String> = deps.iter().zip(gates).filter(|(_, g)| **g).map(|(d, _)| trim(d)).collect();
-			let deps: Vec<String> = deps.iter().map(|d| buffered(&trim(d), &t.topology)).collect();
-			let topo = TopoNode {
-				node: trim(node),
+		let entry = self.0.timed.then(Instant::now);
+		let r = &mut *self.0;
+		let i = r.idx;
+		r.idx += 1;
+		if r.raw.len() == i {
+			r.raw.push(node);
+			r.meta.get_or_insert_default().push(Meta {
+				node,
 				deps,
 				gates,
-				dims: fire.dims.to_vec(),
-				plots: fire.plots.iter().map(PlotOut::from).collect(),
-				cost_ns: None,
-			};
-			t.series.push(SeriesOut {
-				node: topo.node.clone(),
-				deps: topo.deps.clone(),
-				gates: topo.gates.clone(),
-				dims: topo.dims.clone(),
-				plots: topo.plots.clone(),
-				points: Vec::new(),
+				dims: fire.dims,
+				plots: fire.plots,
 			});
-			t.topology.push(topo);
-			t.raw.push(node);
-			t.cost.push(Cost::default());
+			r.acts.push(Act::default());
 		} else {
-			assert_eq!(t.raw[i], node, "step order shifted between ticks");
+			assert_eq!(r.raw[i], node, "step order shifted between ticks");
 		}
 		// closed *before* this fire is recorded, so what it prices is the node's step and not the tape.
 		if let Some(entry) = entry {
-			let step_ns = t.clock.mark(entry);
-			t.cost[i].sample(step_ns);
+			let ns = r.clock.mark(entry);
+			r.spans.push(ns);
 		}
 
-		// The glance goes first so one scratch serves both renderings: the detail has to outlive the
-		// series write below, the glance does not.
-		t.scratch.clear();
-		write!(t.scratch, "{}", fire.glance).expect("`String`'s `Write` is infallible");
-		let out: String = t.scratch.as_str().into();
-
-		t.scratch.clear();
+		let act = &mut r.acts[i];
+		act.out.clear();
+		write!(act.out, "{}", fire.glance).expect("`String`'s `Write` is infallible");
+		act.detail.clear();
 		// The `Err` is [`Clip`] reporting that it has seen enough, and `String` has no other failure —
 		// discarded because stopping the render early is the entire point of asking.
 		let _ = write!(
 			Clip {
-				out: &mut t.scratch,
+				out: &mut act.detail,
 				left: Some(DETAIL_MAX)
 			},
 			"{:?}",
 			fire.debug
 		);
+		refill(&mut act.vals, fire.vals);
+		refill(&mut act.jac, fire.jac);
 
-		if let Some(vals) = fire.vals {
-			let ms = t.ts_ns / 1_000_000;
-			let bucket = ms - ms.rem_euclid(t.bucket_ms);
-			match t.series[i].points.last_mut() {
-				// `>=`, not `==`: a feed's timestamps do go backwards (a coarse lane landing on an exact
-				// hour boundary weaves ahead of the tape around it), and one non-ascending point makes
-				// lightweight-charts drop *every* series it holds.
-				Some(p) if p.ts_ms >= bucket => {
-					p.vals.clear();
-					p.vals.extend_from_slice(vals);
-					p.detail.clone_from(&t.scratch);
-				}
-				_ => t.series[i].points.push(PointOut {
-					ts_ms: bucket,
-					vals: vals.to_vec(),
-					detail: t.scratch.clone(),
-				}),
-			}
-		}
-
-		let act = Act {
-			out,
-			detail: t.scratch.as_str().into(),
-			vals: fire.vals.map(<[f64]>::to_vec),
-			jac: fire.jac.map(<[f64]>::to_vec),
-		};
-		t.ticks.back_mut().expect("`Viz::at` opens the tick before the graph steps").acts.push(act);
-		if self.timed {
-			self.t.clock.mark(Instant::now());
+		if r.timed {
+			r.clock.mark(Instant::now());
 		}
 	}
 }
 
+impl Drop for Rec<'_> {
+	fn drop(&mut self) {
+		// An unwinding sweep left a half-recorded tick, and the assert below would trade the panic
+		// that explains it for a double one out of this destructor.
+		if std::thread::panicking() {
+			return;
+		}
+		let r = &mut *self.0;
+		assert_eq!(r.idx, r.acts.len(), "every node reports on every tick");
+		let msg = TickMsg {
+			ts_ns: r.ts_ns,
+			acts: std::mem::take(&mut r.acts),
+			meta: r.meta.take(),
+			spans: r.timed.then(|| r.spans.clone()),
+		};
+		let gone = "the tape thread outlives every recorder but a sealed one";
+		match r.mode {
+			Backpressure::Block => r.tx.send(msg).expect(gone),
+			Backpressure::Drop => match r.tx.try_send(msg) {
+				Ok(()) => {}
+				// Kept, not discarded: the buffers are this tick's to reuse on the next one, and the
+				// meta is the only copy of a node's identity there will ever be.
+				Err(TrySendError::Full(msg)) => {
+					r.dropped.fetch_add(1, Ordering::Relaxed);
+					r.acts = msg.acts;
+					r.meta = msg.meta;
+				}
+				Err(TrySendError::Disconnected(_)) => panic!("{gone}"),
+			},
+		}
+	}
+}
+
+/// Overwrites in place where both sides have something, so a node that fires every tick keeps one
+/// allocation for the whole run.
+fn refill(slot: &mut Option<Vec<f64>>, src: Option<&[f64]>) {
+	match (slot.as_mut(), src) {
+		(Some(v), Some(src)) => {
+			v.clear();
+			v.extend_from_slice(src);
+		}
+		(_, src) => *slot = src.map(<[f64]>::to_vec),
+	}
+}
+
+/// A node's identity, sent the one tick it first steps on. Every field is `&'static`, so what
+/// crosses the channel is pointers and the naming happens on the tape thread.
+struct Meta {
+	node: &'static str,
+	deps: &'static [&'static str],
+	gates: &'static [bool],
+	dims: &'static [usize],
+	plots: &'static [Plot],
+}
+
+struct TickMsg {
+	ts_ns: i64,
+	acts: Vec<Act>,
+	/// `None` once the graph is whole, which after the first tick it is.
+	meta: Option<Vec<Meta>>,
+	/// Per-node step spans, present only on the clocked ticks — see [`crate::cost`].
+	spans: Option<Vec<f64>>,
+}
+
 /// Node identity lives once in `topology`; a tick keeps only what varies.
+#[derive(Default)]
 struct Act {
 	out: String,
 	detail: String,
@@ -217,33 +330,88 @@ pub(crate) struct Tape {
 	capacity: usize,
 	bucket_ms: i64,
 	topology: Vec<TopoNode>,
-	/// `topology`'s untrimmed names, positional with it. Kept apart from [`TopoNode`], which is a wire
-	/// type: the per-fire step-order check is a `&'static str` compare against this, not a re-[`trim`].
-	raw: Vec<&'static str>,
 	/// `topology`'s per-node step-cost estimates, positional with it.
 	cost: Vec<Cost>,
-	/// Step-order span clock — see [`Cost`].
-	clock: Clock,
 	/// Ascending by `abs`, fewer than `capacity` of them — see [`Tape::thin`].
 	ticks: VecDeque<Tick>,
-	/// Ticks ever opened, thinned-away ones included.
+	/// Ticks ever absorbed, thinned-away ones included.
 	opened: usize,
 	/// Spacing of the retained ticks outside the whole-kept tail; a power of two.
 	stride: usize,
 	/// The recording is over — see [`Tape::head`].
 	sealed: bool,
+	/// The recorder's drop tally, shared — see [`Recorder::dropped`].
+	dropped: Arc<AtomicUsize>,
 	series: Vec<SeriesOut>,
 	/// Ticks consumed; the frame describes the one that consumed `cursor - 1`. Absolute, so a
 	/// thinning pass under a parked cursor cannot slide it.
 	cursor: usize,
-	ts_ns: i64,
-	/// Per-tick step counter: step order is identical every tick, so it doubles as node id.
-	idx: usize,
-	/// Reused across every fire of every tick, so a rendering costs a memcpy rather than an alloc.
-	scratch: String,
 }
 
 impl Tape {
+	/// Takes one finished tick onto the tape, and hands back the act buffers a thinning pass freed.
+	fn absorb(&mut self, msg: TickMsg) -> Vec<Vec<Act>> {
+		let TickMsg { ts_ns, acts, meta, spans } = msg;
+		for m in meta.into_iter().flatten() {
+			// names rather than the positional flags: on the wire `gates` is a subset of `deps`, which is
+			// what both readers test membership against.
+			let gates: Vec<String> = m.deps.iter().zip(m.gates).filter(|(_, g)| **g).map(|(d, _)| trim(d)).collect();
+			let deps: Vec<String> = m.deps.iter().map(|d| buffered(&trim(d), &self.topology)).collect();
+			let topo = TopoNode {
+				node: trim(m.node),
+				deps,
+				gates,
+				dims: m.dims.to_vec(),
+				plots: m.plots.iter().map(PlotOut::from).collect(),
+				cost_ns: None,
+			};
+			self.series.push(SeriesOut {
+				node: topo.node.clone(),
+				deps: topo.deps.clone(),
+				gates: topo.gates.clone(),
+				dims: topo.dims.clone(),
+				plots: topo.plots.clone(),
+				points: Vec::new(),
+			});
+			self.topology.push(topo);
+			self.cost.push(Cost::default());
+		}
+		if let Some(spans) = spans {
+			assert_eq!(spans.len(), self.cost.len(), "a clocked tick clocks every node in it");
+			for (c, ns) in self.cost.iter_mut().zip(spans) {
+				c.sample(ns);
+			}
+		}
+
+		let ms = ts_ns / 1_000_000;
+		let bucket = ms - ms.rem_euclid(self.bucket_ms);
+		for (i, a) in acts.iter().enumerate() {
+			let Some(vals) = &a.vals else { continue };
+			match self.series[i].points.last_mut() {
+				// `>=`, not `==`: a feed's timestamps do go backwards (a coarse lane landing on an exact
+				// hour boundary weaves ahead of the tape around it), and one non-ascending point makes
+				// lightweight-charts drop *every* series it holds.
+				Some(p) if p.ts_ms >= bucket => {
+					p.vals.clear();
+					p.vals.extend_from_slice(vals);
+					p.detail.clone_from(&a.detail);
+				}
+				_ => self.series[i].points.push(PointOut {
+					ts_ms: bucket,
+					vals: vals.clone(),
+					detail: a.detail.clone(),
+				}),
+			}
+		}
+
+		let freed = if self.ticks.len() == self.capacity { self.thin() } else { Vec::new() };
+		debug_assert!(self.ticks.len() < self.capacity);
+		let abs = self.opened;
+		self.opened += 1;
+		self.ticks.push_back(Tick { abs, ts_ns, acts });
+		freed
+	}
+
 	/// What the buffer keeps: the newest `capacity / 2` ticks whole, plus every `stride`-th tick over
 	/// everything before them. So the freshest stretch is still tick-exact while the run stays
 	/// walkable end to end — dropping the front instead, as a plain ring does, makes the beginning
@@ -251,17 +419,28 @@ impl Tape {
 	///
 	/// `stride` only ever doubles, so each pass keeps a subset of what the last one did, and each
 	/// leaves a quarter of the buffer free — one O(capacity) pass per `capacity / 4` ticks.
-	fn thin(&mut self) {
+	///
+	/// The dropped ticks' act buffers go back to the recorder rather than being freed here.
+	fn thin(&mut self) -> Vec<Vec<Act>> {
 		while self.opened / self.stride > self.capacity / 4 {
 			self.stride *= 2;
 		}
 		let whole = self.opened.saturating_sub(self.capacity / 2);
 		let stride = self.stride;
-		self.ticks.retain(|t| t.abs >= whole || t.abs % stride == 0);
+		let mut freed = Vec::new();
+		let mut kept = VecDeque::with_capacity(self.ticks.len());
+		for t in self.ticks.drain(..) {
+			match t.abs >= whole || t.abs % stride == 0 {
+				true => kept.push_back(t),
+				false => freed.push(t.acts),
+			}
+		}
+		self.ticks = kept;
+		freed
 	}
 
-	/// Last addressable cursor. `at` opens a tick before the graph sweeps it, so until the recording
-	/// is sealed the newest tick is still being written and is not a frame anyone may see.
+	/// Last addressable cursor. Until the recording is sealed the recorder is still filling a tick
+	/// past the newest absorbed one, so the head is held one back rather than flickering.
 	fn head(&self) -> usize {
 		if self.sealed { self.opened } else { self.opened.saturating_sub(1) }
 	}
@@ -285,8 +464,8 @@ impl Tape {
 		self.cursor = self.ticks[p.min(last)].abs + 1;
 	}
 
-	/// Empty until the first tick closes: `Observer::on` grows this one node at a time *within* a
-	/// tick, and a client topo-sorting a prefix would find a node whose deps aren't there yet.
+	/// Empty until the first tick is addressable, so what a client topo-sorts is a graph with a frame
+	/// behind it.
 	pub(crate) fn topology(&self) -> Vec<TopoNode> {
 		if self.head() < 1 {
 			return Vec::new();
@@ -335,6 +514,7 @@ impl Tape {
 			tick: tick.map_or(0, |(_, t)| t.abs + 1),
 			total: self.head(),
 			sealed: self.sealed,
+			dropped: self.dropped.load(Ordering::Relaxed),
 			pending: false,
 			ts_ns: tick.map_or(0, |(_, t)| t.ts_ns),
 			activations: tick.map_or_else(Vec::new, |(p, t)| {
@@ -602,11 +782,12 @@ mod tests {
 
 	#[test]
 	fn a_backwards_tick_leaves_the_series_ascending() {
-		let mut viz = Viz::new(None, 8, 60_000);
+		let (viz, mut rec) = Viz::new(None, 8, 60_000, Backpressure::Block);
 		for min in [2, 3, 2, 4] {
 			let ts_ns = min * 60 * 1_000_000_000;
-			viz.at(ts_ns).on("N", &[], &[], fire(&[min as f64]));
+			rec.at(ts_ns).on("N", &[], &[], fire(&[min as f64]));
 		}
+		rec.seal();
 		let day = viz.lock().day();
 		let ts: Vec<i64> = day.series[0].points.iter().map(|p| p.ts_ms).collect();
 		assert!(ts.windows(2).all(|w| w[0] < w[1]), "{ts:?}");
@@ -616,28 +797,48 @@ mod tests {
 	/// recording it just did. A recorder charging its own work forward would read every node alike.
 	#[test]
 	fn a_slow_step_is_charged_to_the_node_that_took_it() {
-		let mut viz = Viz::new(None, 4096, 60_000);
+		let (viz, mut rec) = Viz::new(None, 4096, 60_000, Backpressure::Block);
 		// a few blocks' worth of clocked ticks, which is what it takes for an estimate to exist at all.
 		for i in 0..TICK_STRIDE * 32 {
-			let mut r = viz.at(i as i64 * 60 * 1_000_000_000);
+			let mut r = rec.at(i as i64 * 60 * 1_000_000_000);
 			r.on("Fast", &[], &[], fire(&[0.0]));
 			std::thread::sleep(std::time::Duration::from_micros(100));
 			r.on("Slow", &["Fast"], &[false], fire(&[1.0]));
 		}
+		rec.seal();
 		let cost: Vec<f64> = viz.lock().topology().iter().map(|n| n.cost_ns.expect("blocks closed")).collect();
 		assert!(cost[1] > 50_000.0, "the slept step reads as {}ns", cost[1]);
 		assert!(cost[0] * 4.0 < cost[1], "the fast step reads as {}ns next to {}ns", cost[0], cost[1]);
+	}
+
+	/// A tick the handoff had no room for is one the tape will never hold, so the only thing that can
+	/// keep it from reading as a quiet market is the count — which every landing tick carries, so a
+	/// burst of drops is still reported by whatever follows it.
+	#[test]
+	fn a_dropped_tick_is_counted_rather_than_lost() {
+		let (viz, mut rec) = Viz::new(None, 8, 60_000, Backpressure::Drop);
+		let stepped = QUEUE + 64;
+		// The tape thread cannot absorb what it is blocked on, so the queue fills and stays full.
+		let held = viz.lock();
+		for i in 0..stepped as i64 {
+			rec.at(i * 60 * 1_000_000_000).on("N", &[], &[], fire(&[i as f64]));
+		}
+		drop(held);
+		rec.seal();
+		let f = viz.lock().frame();
+		assert!(f.dropped > 0, "the queue never filled, so this measured nothing");
+		assert_eq!(f.dropped + f.total, stepped, "every stepped tick is either on the tape or counted");
 	}
 
 	/// A run many times the capacity is still walkable end to end — the bug this replaced dropped the
 	/// buffer's front, which left `seek(0)` landing wherever eviction happened to have reached.
 	#[test]
 	fn the_whole_run_stays_walkable_past_the_capacity() {
-		let mut viz = Viz::new(None, 64, 60_000);
+		let (viz, mut rec) = Viz::new(None, 64, 60_000, Backpressure::Block);
 		for i in 0..5000 {
-			viz.at(i * 60 * 1_000_000_000).on("N", &[], &[], fire(&[i as f64]));
+			rec.at(i * 60 * 1_000_000_000).on("N", &[], &[], fire(&[i as f64]));
 		}
-		viz.clone().seal();
+		rec.seal();
 		let mut t = viz.lock();
 		assert_eq!(t.seek(0).tick, 1, "the recording's first tick is addressable");
 		let mut walk = vec![t.frame().tick];

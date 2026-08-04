@@ -58,6 +58,11 @@ html, body, #main {
   margin-left: 4px;
 }
 
+.pos.warn {
+  opacity: 1;
+  color: oklch(0.72 0.17 40);
+}
+
 .banner {
   flex: 0 0 auto;
   padding: 4px 12px;

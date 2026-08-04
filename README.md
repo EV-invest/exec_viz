@@ -11,7 +11,7 @@ Tick-by-tick replay for a [`trading_data`](https://github.com/EV-invest/trading_
 
 Production evaluates the graph through `step`. Point `exec_viz` at the same tick chain and it runs under a recording `Observer` instead, so the browser can walk the run back: layers lighting up as they fire, element values and their local Jacobians drawn on the computation graph itself, next to a candle chart of the same day.
 
-It is a **library, not a runner**. The app owns the graph, the feed and the runtime; it attaches a `Viz`, hands it to its own `tick_obs`, and serves it on a port of its choosing. Every handler reads whatever has been recorded so far, so the server runs *alongside* the recording — a live feed is scrubbable while it is still arriving.
+It is a **library, not a runner**. The app owns the graph, the feed and the runtime; it attaches a `Recorder`, hands it to its own `tick_obs`, and serves the `Viz` on a port of its choosing. Every handler reads whatever has been recorded so far, so the server runs *alongside* the recording — a live feed is scrubbable while it is still arriving.
 <!-- markdownlint-disable -->
 <details>
 <summary>
@@ -36,27 +36,29 @@ Without the env var the server panics on boot rather than serving a guessed-at (
 <!-- markdownlint-restore -->
 
 ## Usage
-Attach a `Viz` to the graph you already have, and serve it. `bind` is separate from `serve_on` precisely so the URL answers — and prints — *before* the work it describes begins:
+Attach a `Recorder` to the graph you already have, and serve its `Viz`. `bind` is separate from `serve_on` precisely so the URL answers — and prints — *before* the work it describes begins:
 
 ```rust,ignore
-use exec_viz::Viz;
+use exec_viz::{Backpressure, Viz};
 
 // `price_node` names an OHLCV node, whose series is the candle pane; `capacity` bounds the
 // retained ticks; `bucket_ms` is the chart's sample period.
-let mut viz = Viz::new(Some(<Bar1m as Cell>::NAME), 100_000, 60_000);
+let (viz, mut rec) = Viz::new(Some(<Bar1m as Cell>::NAME), 100_000, 60_000, Backpressure::Block);
 
 let listener = Viz::bind(8080).await;
 println!("http://{}", listener.local_addr()?);
 
 tokio::join!(viz.clone().serve_on(listener), async {
     for (ts_ns, batches) in feed {
-        graph.tick_obs(batches, viz.at(ts_ns));
+        graph.tick_obs(batches, &mut rec.at(ts_ns));
     }
-    viz.seal(); // a finite recording says so; a live feed never does
+    rec.seal(); // a finite recording says so; a live feed just drops the recorder
 });
 ```
 
-`viz.at(ts)` opens a tick and hands back the observer, so the graph's own sweep is the thing being recorded — there is no second evaluation path to keep in step with the first. Nothing else goes in: the candles are read off `price_node`'s own `[open, high, low, close, volume]` recording, so a bar the graph already computes is not also held as an output to draw it. `seal` takes `self`, so the handle you recorded through is spent and `total` stops growing.
+`rec.at(ts)` opens a tick and hands back the observer, so the graph's own sweep is the thing being recorded — there is no second evaluation path to keep in step with the first. Nothing else goes in: the candles are read off `price_node`'s own `[open, high, low, close, volume]` recording, so a bar the graph already computes is not also held as an output to draw it. `seal` takes `self`, so the handle you recorded through is spent and `total` stops growing.
+
+**The recording is not on your thread.** A finished tick crosses to a tape thread over a bounded channel, and that thread does the naming, bucketing, thinning and cost accounting; the graph pays a `Display`, a clipped `Debug` and one push, into buffers the tape hands back. `Backpressure` says what a full channel means: `Block` for a replay, which wants the whole tape and whose feed will wait, and `Drop` for a live run, where a fill must never queue behind a study aid — dropped ticks are counted into `ActivationFrame::dropped` rather than passing for a quiet market.
 
 **The tape is the storage.** A live run cannot be re-run, so ticks are kept rather than replayed-by-rewinding. Past `capacity`, the buffer *thins* instead of dropping its front: the newest `capacity / 2` ticks stay whole, and everything older is decimated to every `stride`-th tick (`stride` only doubles). A run many times the capacity stays walkable end to end, with the freshest stretch still tick-exact — where a plain ring would make the beginning of a long recording unreachable for the rest of the run. The per-node series the chart draws is downsampled online into `bucket_ms` buckets and never dropped.
 

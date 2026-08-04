@@ -117,6 +117,10 @@ pub struct ActivationFrame {
 	pub total: usize,
 	/// The recording is over: `total` will not grow again.
 	pub sealed: bool,
+	/// Ticks the graph stepped that the tape never got, because the recorder was running under
+	/// `Backpressure::Drop` and the handoff was full. Non-zero means the run outpaced its own viz —
+	/// the gap is in the tape, and this is what says so rather than it reading as a quiet market.
+	pub dropped: usize,
 	/// This op ran out of recorded ticks — re-issuing it later will get further.
 	pub pending: bool,
 	pub ts_ns: i64,
