@@ -6,9 +6,9 @@
 //! age rather than forgetting its front; the per-node series the chart draws is downsampled online
 //! and never dropped.
 //!
-//! The two halves do not share a thread. The graph's leg of a fire is one `Glance` into a recycled
-//! buffer plus one channel push; naming the topology, bucketing the series, thinning and the cost
-//! statistics all happen on the tape thread, off the trading core.
+//! The two halves do not share a thread. The graph's leg of a fire is one `Glance` appended to a
+//! recycled column plus one channel push; naming the topology, bucketing the series, thinning and
+//! the cost statistics all happen on the tape thread, off the trading core.
 
 use std::{
 	collections::{HashMap, VecDeque},
@@ -99,7 +99,7 @@ impl Viz {
 				mode,
 				raw: Vec::new(),
 				meta: None,
-				acts: Vec::new(),
+				acts: Acts::default(),
 				spans: Vec::new(),
 				clock: Clock::new(),
 				opened: 0,
@@ -122,9 +122,9 @@ impl Viz {
 /// it owns the handoff to the tape thread and the buffers being recycled across it.
 pub struct Recorder {
 	tx: SyncSender<TickMsg>,
-	/// Drained `Vec<Act>` coming back from the tape with their `String` and `Vec` capacities intact,
-	/// which is what makes a fire's rendering a memcpy rather than an allocation.
-	recycle: Receiver<Vec<Act>>,
+	/// Drained columns coming back from the tape with their capacities intact, which is what makes a
+	/// fire's rendering a memcpy rather than an allocation.
+	recycle: Receiver<Acts>,
 	join: JoinHandle<()>,
 	mode: Backpressure,
 	/// The stepped nodes' names, positional. The per-fire step-order check compares against this, and
@@ -132,7 +132,7 @@ pub struct Recorder {
 	raw: Vec<&'static str>,
 	/// Nodes stepped for the first time, held until the tick they appeared on is sent.
 	meta: Option<Vec<Meta>>,
-	acts: Vec<Act>,
+	acts: Acts,
 	spans: Vec<f64>,
 	/// Step-order span clock — see [`Cost`].
 	clock: Clock,
@@ -155,12 +155,12 @@ impl Recorder {
 		self.idx = 0;
 		self.timed = self.opened % TICK_STRIDE == 0;
 		self.opened += 1;
-		if self.acts.is_empty() {
+		// Tested before it is cleared: an empty buffer is one `Drop` handed off, and asking the recycle
+		// channel for a replacement it never took back drains it for nothing every tick.
+		if self.acts.ends.is_empty() {
 			self.acts = self.recycle.try_recv().unwrap_or_default();
 		}
-		// A recycled buffer is already node-for-node; a freshly allocated one has to be made so, since
-		// after the first tick `on` addresses it by step index rather than pushing onto it.
-		self.acts.resize_with(self.raw.len(), Act::default);
+		self.acts.clear();
 		if self.timed {
 			self.spans.clear();
 			// the sweep has not started, so the span the first node will close begins here.
@@ -207,7 +207,6 @@ impl Observer for Rec<'_> {
 				dims: fire.dims,
 				plots: fire.plots,
 			});
-			r.acts.push(Act::default());
 		} else {
 			assert_eq!(r.raw[i], node, "step order shifted between ticks");
 		}
@@ -217,16 +216,19 @@ impl Observer for Rec<'_> {
 			r.spans.push(ns);
 		}
 
-		let act = &mut r.acts[i];
-		// Cleared unconditionally, rendered only by a fire: nothing downstream reads an unfired act's
-		// `out` — `frame` resolves one through `held`, `absorb` skips it and `step_until_change` tests
-		// `vals` first — but `held`'s fallback would show a stale string if one were left behind.
-		act.out.clear();
-		if fire.vals.is_some() {
-			write!(act.out, "{}", fire.glance).expect("`String`'s `Write` is infallible");
+		// A node's columns growing is what says it fired, so both have to grow by something. Every
+		// `Flat` in the tree has `LEN >= 1` and a Jacobian that ran is `out_len × dep_len` of nodes
+		// that each flatten to at least one slot — stated here once rather than stored 840,000 times.
+		assert!(fire.dims.iter().product::<usize>() > 0, "{node} flattens to nothing");
+		assert!(fire.jac.is_none_or(|j| !j.is_empty()), "{node}'s Jacobian ran and came back empty");
+		if let Some(vals) = fire.vals {
+			write!(r.acts.outs, "{}", fire.glance).expect("`String`'s `Write` is infallible");
+			r.acts.vals.extend_from_slice(vals);
 		}
-		refill(&mut act.vals, fire.vals);
-		refill(&mut act.jac, fire.jac);
+		if let Some(jac) = fire.jac {
+			r.acts.jac.extend_from_slice(jac);
+		}
+		r.acts.close();
 
 		if r.timed {
 			r.clock.mark(Instant::now());
@@ -242,7 +244,7 @@ impl Drop for Rec<'_> {
 			return;
 		}
 		let r = &mut *self.0;
-		assert_eq!(r.idx, r.acts.len(), "every node reports on every tick");
+		assert_eq!(r.idx, r.acts.ends.len(), "every node reports on every tick");
 		let msg = TickMsg {
 			ts_ns: r.ts_ns,
 			acts: std::mem::take(&mut r.acts),
@@ -267,18 +269,6 @@ impl Drop for Rec<'_> {
 	}
 }
 
-/// Overwrites in place where both sides have something, so a node that fires every tick keeps one
-/// allocation for the whole run.
-fn refill(slot: &mut Option<Vec<f64>>, src: Option<&[f64]>) {
-	match (slot.as_mut(), src) {
-		(Some(v), Some(src)) => {
-			v.clear();
-			v.extend_from_slice(src);
-		}
-		(_, src) => *slot = src.map(<[f64]>::to_vec),
-	}
-}
-
 /// A node's identity, sent the one tick it first steps on. Every field is `&'static`, so what
 /// crosses the channel is pointers and the naming happens on the tape thread.
 struct Meta {
@@ -291,26 +281,78 @@ struct Meta {
 
 struct TickMsg {
 	ts_ns: i64,
-	acts: Vec<Act>,
+	acts: Acts,
 	/// `None` once the graph is whole, which after the first tick it is.
 	meta: Option<Vec<Meta>>,
 	/// Per-node step spans, present only on the clocked ticks — see [`crate::cost`].
 	spans: Option<Vec<f64>>,
 }
 
-/// Node identity lives once in `topology`; a tick keeps only what varies.
+/// One tick's acts. Node identity lives once in `topology`; a tick keeps only what varies, and it
+/// keeps it by column: a per-node `String` and two `Vec`s were three heap pointers each and the tape
+/// holds `capacity` ticks of them. Step order is fixed and asserted, so the columns are appended
+/// front to back and a node is a set of ends into each.
 #[derive(Default)]
-pub(crate) struct Act {
-	pub(crate) out: String,
-	pub(crate) vals: Option<Vec<f64>>,
-	pub(crate) jac: Option<Vec<f64>>,
+struct Acts {
+	outs: String,
+	vals: Vec<f64>,
+	jac: Vec<f64>,
+	/// Positional with `topology`.
+	ends: Vec<Ends>,
+}
+
+#[derive(Clone, Copy)]
+struct Ends {
+	out: u32,
+	vals: u32,
+	jac: u32,
+}
+
+/// One node's slice of a tick. `vals: None` is the unfired reading — a fired node's columns always
+/// grow, which is the invariant [`Rec::on`] asserts so this does not have to store a flag.
+#[derive(Clone, Copy)]
+struct ActRef<'a> {
+	out: &'a str,
+	vals: Option<&'a [f64]>,
+	jac: Option<&'a [f64]>,
+}
+
+impl Acts {
+	fn get(&self, i: usize) -> Option<ActRef<'_>> {
+		let end = *self.ends.get(i)?;
+		let start = if i == 0 { Ends { out: 0, vals: 0, jac: 0 } } else { self.ends[i - 1] };
+		let span = |a: u32, b: u32| (b > a).then_some(a as usize..b as usize);
+		Some(ActRef {
+			out: &self.outs[start.out as usize..end.out as usize],
+			vals: span(start.vals, end.vals).map(|r| &self.vals[r]),
+			jac: span(start.jac, end.jac).map(|r| &self.jac[r]),
+		})
+	}
+
+	/// Closes the node being appended. The ends are asserted rather than widened: a tick that
+	/// overflows one is a graph that changed shape, not a tape that should quietly keep going.
+	fn close(&mut self) {
+		let end = |n: usize| u32::try_from(n).expect("one tick's columns are far under 4G");
+		self.ends.push(Ends {
+			out: end(self.outs.len()),
+			vals: end(self.vals.len()),
+			jac: end(self.jac.len()),
+		});
+	}
+
+	fn clear(&mut self) {
+		self.outs.clear();
+		self.vals.clear();
+		self.jac.clear();
+		self.ends.clear();
+	}
 }
 
 struct Tick {
 	/// Index among *all* ticks ever opened, so a tick's id survives every thinning pass.
 	abs: usize,
 	ts_ns: i64,
-	acts: Vec<Act>,
+	acts: Acts,
 }
 
 pub(crate) struct Tape {
@@ -338,7 +380,7 @@ pub(crate) struct Tape {
 
 impl Tape {
 	/// Takes one finished tick onto the tape, and hands back the act buffers a thinning pass freed.
-	fn absorb(&mut self, msg: TickMsg) -> Vec<Vec<Act>> {
+	fn absorb(&mut self, msg: TickMsg) -> Vec<Acts> {
 		let TickMsg { ts_ns, acts, meta, spans } = msg;
 		for m in meta.into_iter().flatten() {
 			// names rather than the positional flags: on the wire `gates` is a subset of `deps`, which is
@@ -373,9 +415,9 @@ impl Tape {
 
 		let ms = ts_ns / 1_000_000;
 		let bucket = ms - ms.rem_euclid(self.bucket_ms);
-		for (i, a) in acts.iter().enumerate() {
-			let Some(vals) = &a.vals else { continue };
-			match self.series[i].points.last_mut() {
+		for (i, s) in self.series.iter_mut().enumerate() {
+			let Some(vals) = acts.get(i).and_then(|a| a.vals) else { continue };
+			match s.points.last_mut() {
 				// `>=`, not `==`: a feed's timestamps do go backwards (a coarse lane landing on an exact
 				// hour boundary weaves ahead of the tape around it), and one non-ascending point makes
 				// lightweight-charts drop *every* series it holds.
@@ -383,7 +425,7 @@ impl Tape {
 					p.vals.clear();
 					p.vals.extend_from_slice(vals);
 				}
-				_ => self.series[i].points.push(PointOut { ts_ms: bucket, vals: vals.clone() }),
+				_ => s.points.push(PointOut { ts_ms: bucket, vals: vals.to_vec() }),
 			}
 		}
 
@@ -404,7 +446,7 @@ impl Tape {
 	/// leaves a quarter of the buffer free — one O(capacity) pass per `capacity / 4` ticks.
 	///
 	/// The dropped ticks' act buffers go back to the recorder rather than being freed here.
-	fn thin(&mut self) -> Vec<Vec<Act>> {
+	fn thin(&mut self) -> Vec<Acts> {
 		while self.opened / self.stride > self.capacity / 4 {
 			self.stride *= 2;
 		}
@@ -501,24 +543,24 @@ impl Tape {
 			pending: false,
 			ts_ns: tick.map_or(0, |(_, t)| t.ts_ns),
 			activations: tick.map_or_else(Vec::new, |(p, t)| {
-				t.acts
+				self.topology
 					.iter()
-					.zip(&self.topology)
 					.enumerate()
-					.map(|(i, (a, n))| {
+					.filter_map(|(i, n)| {
+						let a = t.acts.get(i)?;
 						// A quiet node still holds its last value: show it, `fired` is what says it's live.
 						let held = if a.vals.is_some() { a } else { self.held(i, p).unwrap_or(a) };
-						Activation {
+						Some(Activation {
 							node: n.node.clone(),
 							deps: n.deps.clone(),
 							gates: n.gates.clone(),
-							out: held.out.clone(),
+							out: held.out.to_string(),
 							fired: a.vals.is_some(),
 							dims: n.dims.clone(),
-							vals: held.vals.as_ref().map(|v| v.iter().map(|x| x.is_finite().then_some(*x)).collect()),
-							jac: a.jac.as_ref().map(|j| j.iter().map(|w| (!w.is_nan()).then_some(*w)).collect()),
+							vals: held.vals.map(|v| v.iter().map(|x| x.is_finite().then_some(*x)).collect()),
+							jac: a.jac.map(|j| j.iter().map(|w| (!w.is_nan()).then_some(*w)).collect()),
 							cost_ns: self.cost[i].ns(),
-						}
+						})
 					})
 					.collect()
 			}),
@@ -530,7 +572,7 @@ impl Tape {
 	/// show — a remembered tick number would outlive the tick a thinning pass dropped.
 	/// ponytail: linear scan, bounded by `capacity`; index the fires per node if a frame ever costs
 	/// enough to feel.
-	fn held(&self, i: usize, p: usize) -> Option<&Act> {
+	fn held(&self, i: usize, p: usize) -> Option<ActRef<'_>> {
 		self.ticks.iter().take(p + 1).rev().find_map(|t| t.acts.get(i).filter(|a| a.vals.is_some()))
 	}
 
@@ -581,7 +623,7 @@ impl Tape {
 			watched
 				.iter()
 				.zip(&baseline)
-				.any(|(&i, was)| t.acts.get(i).is_some_and(|a| a.vals.is_some() && Some(&a.out) != was.as_ref()))
+				.any(|(&i, was)| t.acts.get(i).is_some_and(|a| a.vals.is_some() && was.as_deref() != Some(a.out)))
 		})
 	}
 
