@@ -218,8 +218,13 @@ impl Observer for Rec<'_> {
 		}
 
 		let act = &mut r.acts[i];
+		// Cleared unconditionally, rendered only by a fire: nothing downstream reads an unfired act's
+		// `out` — `frame` resolves one through `held`, `absorb` skips it and `step_until_change` tests
+		// `vals` first — but `held`'s fallback would show a stale string if one were left behind.
 		act.out.clear();
-		write!(act.out, "{}", fire.glance).expect("`String`'s `Write` is infallible");
+		if fire.vals.is_some() {
+			write!(act.out, "{}", fire.glance).expect("`String`'s `Write` is infallible");
+		}
 		refill(&mut act.vals, fire.vals);
 		refill(&mut act.jac, fire.jac);
 
