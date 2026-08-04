@@ -24,6 +24,8 @@
 pub mod api_types;
 
 #[cfg(feature = "server")]
+mod cost;
+#[cfg(feature = "server")]
 pub mod record;
 #[cfg(feature = "server")]
 mod server;

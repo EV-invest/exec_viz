@@ -10,11 +10,15 @@ use std::{
 	collections::{HashMap, VecDeque},
 	fmt::Write as _,
 	sync::{Arc, Mutex, MutexGuard},
+	time::Instant,
 };
 
 use trading_data_dag::{Fire, Ink, Observer, Plot, Want};
 
-use crate::api_types::{Activation, ActivationFrame, DayOut, GuideOut, InkOut, PlotOut, PointOut, SeriesOut, TopoNode};
+use crate::{
+	api_types::{Activation, ActivationFrame, DayOut, GuideOut, InkOut, PlotOut, PointOut, SeriesOut, TopoNode},
+	cost::{Clock, Cost, TICK_STRIDE},
+};
 
 /// The hover tooltip is a study aid, and a root's `Debug` is its whole arrival batch: unclipped, one
 /// tick of a busy feed outweighs a thousand quiet ones.
@@ -37,6 +41,8 @@ impl Viz {
 			bucket_ms,
 			topology: Vec::new(),
 			raw: Vec::new(),
+			cost: Vec::new(),
+			clock: Clock::new(),
 			ticks: VecDeque::new(),
 			opened: 0,
 			stride: 1,
@@ -62,7 +68,12 @@ impl Viz {
 		let abs = t.opened;
 		t.opened += 1;
 		t.ticks.push_back(Tick { abs, ts_ns, acts: Vec::new() });
-		Rec(t)
+		let timed = abs % TICK_STRIDE == 0;
+		if timed {
+			// the sweep has not started, so the span the first node will close begins here.
+			t.clock.mark(Instant::now());
+		}
+		Rec { t, timed }
 	}
 
 	/// Ends the recording: the tick `at` opened last becomes addressable and `total` stops growing.
@@ -81,7 +92,11 @@ impl Viz {
 /// One opened tick's write handle: the tape's lock, held for the whole sweep. Handed to `tick_obs`
 /// by [`Viz::at`] and dropped at the end of that statement, which is what makes the tape readable
 /// again between ticks.
-pub struct Rec<'a>(MutexGuard<'a, Tape>);
+pub struct Rec<'a> {
+	t: MutexGuard<'a, Tape>,
+	/// This tick is one of the clocked ones — see [`crate::cost`].
+	timed: bool,
+}
 
 impl Observer for Rec<'_> {
 	/// A Jacobian is read by exactly one thing — [`Tape::frame`], for the single tick a client is
@@ -94,7 +109,8 @@ impl Observer for Rec<'_> {
 	}
 
 	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [bool], fire: Fire<'_>) {
-		let t = &mut *self.0;
+		let entry = self.timed.then(Instant::now);
+		let t = &mut *self.t;
 		let i = t.idx;
 		t.idx += 1;
 		if t.topology.len() == i {
@@ -108,6 +124,7 @@ impl Observer for Rec<'_> {
 				gates,
 				dims: fire.dims.to_vec(),
 				plots: fire.plots.iter().map(PlotOut::from).collect(),
+				cost_ns: None,
 			};
 			t.series.push(SeriesOut {
 				node: topo.node.clone(),
@@ -119,8 +136,14 @@ impl Observer for Rec<'_> {
 			});
 			t.topology.push(topo);
 			t.raw.push(node);
+			t.cost.push(Cost::default());
 		} else {
 			assert_eq!(t.raw[i], node, "step order shifted between ticks");
+		}
+		// closed *before* this fire is recorded, so what it prices is the node's step and not the tape.
+		if let Some(entry) = entry {
+			let step_ns = t.clock.mark(entry);
+			t.cost[i].sample(step_ns);
 		}
 
 		// The glance goes first so one scratch serves both renderings: the detail has to outlive the
@@ -168,6 +191,9 @@ impl Observer for Rec<'_> {
 			jac: fire.jac.map(<[f64]>::to_vec),
 		};
 		t.ticks.back_mut().expect("`Viz::at` opens the tick before the graph steps").acts.push(act);
+		if self.timed {
+			self.t.clock.mark(Instant::now());
+		}
 	}
 }
 
@@ -194,6 +220,10 @@ pub(crate) struct Tape {
 	/// `topology`'s untrimmed names, positional with it. Kept apart from [`TopoNode`], which is a wire
 	/// type: the per-fire step-order check is a `&'static str` compare against this, not a re-[`trim`].
 	raw: Vec<&'static str>,
+	/// `topology`'s per-node step-cost estimates, positional with it.
+	cost: Vec<Cost>,
+	/// Step-order span clock — see [`Cost`].
+	clock: Clock,
 	/// Ascending by `abs`, fewer than `capacity` of them — see [`Tape::thin`].
 	ticks: VecDeque<Tick>,
 	/// Ticks ever opened, thinned-away ones included.
@@ -258,7 +288,12 @@ impl Tape {
 	/// Empty until the first tick closes: `Observer::on` grows this one node at a time *within* a
 	/// tick, and a client topo-sorting a prefix would find a node whose deps aren't there yet.
 	pub(crate) fn topology(&self) -> Vec<TopoNode> {
-		if self.head() < 1 { Vec::new() } else { self.topology.clone() }
+		if self.head() < 1 {
+			return Vec::new();
+		}
+		// stamped on the way out, not stored: the cost is a live estimate and `topology` is the one
+		// thing on the tape that does not change after the first tick.
+		self.topology.iter().zip(&self.cost).map(|(n, c)| TopoNode { cost_ns: c.ns(), ..n.clone() }).collect()
 	}
 
 	pub(crate) fn day(&self) -> DayOut {
@@ -320,6 +355,7 @@ impl Tape {
 							dims: n.dims.clone(),
 							vals: held.vals.as_ref().map(|v| v.iter().map(|x| x.is_finite().then_some(*x)).collect()),
 							jac: a.jac.as_ref().map(|j| j.iter().map(|w| (!w.is_nan()).then_some(*w)).collect()),
+							cost_ns: self.cost[i].ns(),
 						}
 					})
 					.collect()
@@ -574,6 +610,23 @@ mod tests {
 		let day = viz.lock().day();
 		let ts: Vec<i64> = day.series[0].points.iter().map(|p| p.ts_ms).collect();
 		assert!(ts.windows(2).all(|w| w[0] < w[1]), "{ts:?}");
+	}
+
+	/// What the observer times is the span *before* it was called — the next node's step — and not the
+	/// recording it just did. A recorder charging its own work forward would read every node alike.
+	#[test]
+	fn a_slow_step_is_charged_to_the_node_that_took_it() {
+		let mut viz = Viz::new(None, 4096, 60_000);
+		// a few blocks' worth of clocked ticks, which is what it takes for an estimate to exist at all.
+		for i in 0..TICK_STRIDE * 32 {
+			let mut r = viz.at(i as i64 * 60 * 1_000_000_000);
+			r.on("Fast", &[], &[], fire(&[0.0]));
+			std::thread::sleep(std::time::Duration::from_micros(100));
+			r.on("Slow", &["Fast"], &[false], fire(&[1.0]));
+		}
+		let cost: Vec<f64> = viz.lock().topology().iter().map(|n| n.cost_ns.expect("blocks closed")).collect();
+		assert!(cost[1] > 50_000.0, "the slept step reads as {}ns", cost[1]);
+		assert!(cost[0] * 4.0 < cost[1], "the fast step reads as {}ns next to {}ns", cost[0], cost[1]);
 	}
 
 	/// A run many times the capacity is still walkable end to end — the bug this replaced dropped the

@@ -15,6 +15,10 @@ pub struct TopoNode {
 	pub gates: Vec<String>,
 	pub dims: Vec<usize>,
 	pub plots: Vec<PlotOut>,
+	/// Estimated nanoseconds this node spends per step — what ranks the graph by cost. `None` until
+	/// it has been stepped enough times for the estimate to be about the node rather than the
+	/// machine; see the recorder's `cost` module for what "estimated" means here.
+	pub cost_ns: Option<f64>,
 }
 
 /// Serde mirror of `trading_data_dag::Ink`: l/c/a only — hue stays renderer-owned.
@@ -101,6 +105,8 @@ pub struct Activation {
 	pub dims: Vec<usize>,
 	pub vals: Option<Vec<Option<f64>>>,
 	pub jac: Option<Vec<Option<f64>>>,
+	/// As [`TopoNode::cost_ns`] — carried here too so a card can show it without a second fetch.
+	pub cost_ns: Option<f64>,
 }
 
 /// Replay position + the last tick's activations. `tick` counts consumed events (0 = nothing
