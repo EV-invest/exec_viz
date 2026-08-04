@@ -76,7 +76,10 @@ impl Viz {
 			cursor: 0,
 		})));
 		let (tx, rx) = sync_channel(QUEUE);
-		let (back, recycle) = sync_channel(QUEUE);
+		// A thinning pass keeps the newest half whole, so it can never free more than `capacity / 2` at
+		// once and a return channel that deep takes any one pass entire. At [`QUEUE`] it took a seventh
+		// of one, and the recorder allocated a fresh tick's columns for six ticks in every seven.
+		let (back, recycle) = sync_channel(capacity / 2);
 		let tape = viz.clone();
 		let join = std::thread::Builder::new()
 			.name("exec_viz tape".into())
@@ -300,23 +303,6 @@ struct Acts {
 	/// Positional with `topology`.
 	ends: Vec<Ends>,
 }
-
-#[derive(Clone, Copy)]
-struct Ends {
-	out: u32,
-	vals: u32,
-	jac: u32,
-}
-
-/// One node's slice of a tick. `vals: None` is the unfired reading — a fired node's columns always
-/// grow, which is the invariant [`Rec::on`] asserts so this does not have to store a flag.
-#[derive(Clone, Copy)]
-struct ActRef<'a> {
-	out: &'a str,
-	vals: Option<&'a [f64]>,
-	jac: Option<&'a [f64]>,
-}
-
 impl Acts {
 	fn get(&self, i: usize) -> Option<ActRef<'_>> {
 		let end = *self.ends.get(i)?;
@@ -346,6 +332,22 @@ impl Acts {
 		self.jac.clear();
 		self.ends.clear();
 	}
+}
+
+#[derive(Clone, Copy)]
+struct Ends {
+	out: u32,
+	vals: u32,
+	jac: u32,
+}
+
+/// One node's slice of a tick. `vals: None` is the unfired reading — a fired node's columns always
+/// grow, which is the invariant [`Rec::on`] asserts so this does not have to store a flag.
+#[derive(Clone, Copy)]
+struct ActRef<'a> {
+	out: &'a str,
+	vals: Option<&'a [f64]>,
+	jac: Option<&'a [f64]>,
 }
 
 struct Tick {
