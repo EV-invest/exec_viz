@@ -681,7 +681,6 @@ mod tests {
 
 	fn fire(vals: &[f64]) -> Fire<'_> {
 		Fire {
-			debug: &"",
 			glance: &f64::NAN,
 			dims: &[1],
 			plots: &[Plot::DEFAULT],
