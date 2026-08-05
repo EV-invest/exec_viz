@@ -4,7 +4,7 @@
 //! by the tick's finite-difference Jacobian — values and sensitivities on the computation graph
 //! itself, à la Jane Street's "Computations that differentiate, debug and document themselves".
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use dioxus::prelude::*;
 use exec_viz::api_types::{Activation, TopoNode};
@@ -122,14 +122,14 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 		}
 	}
 	let pinned = |n: &str| gate_set.contains(n) || n.starts_with("Buffer<");
-	let mut suppressors: HashMap<&str, std::collections::BTreeSet<&str>> = HashMap::new();
+	let mut suppressors: HashMap<&str, BTreeSet<&str>> = HashMap::new();
 	for n in topology.iter().rev() {
-		let mut s = std::collections::BTreeSet::new();
+		let mut s = BTreeSet::new();
 		if !pinned(&n.node) {
-			let mut demand: Option<std::collections::BTreeSet<&str>> = None;
+			let mut demand: Option<BTreeSet<&str>> = None;
 			for c in consumers.get(n.node.as_str()).into_iter().flatten() {
 				let term = suppressors.get(c).expect("reverse step order: a consumer is resolved before what it reads");
-				demand = Some(demand.map_or_else(|| term.clone(), |d: std::collections::BTreeSet<&str>| d.intersection(term).copied().collect()));
+				demand = Some(demand.map_or_else(|| term.clone(), |d: BTreeSet<&str>| d.intersection(term).copied().collect()));
 			}
 			// an output answers to nobody, so nothing but its own gates can make it dormant
 			s = demand.unwrap_or_default();
