@@ -8,7 +8,7 @@
 // contiguous slots) and hues spread evenly over the wheel; a node's Sketch only tunes l/c/a.
 //
 // data     = the parsed /api/day payload ({ bars, series: [SeriesOut], price_node }).
-// viewSpec = { theme }.
+// viewSpec = { theme, hidden: [node] }.
 
 // Bound from `draw`'s `lib` argument rather than imported: v_utils' lwc_core owns the one
 // lightweight-charts instance, and a second copy would not share the chart internals we reach into.
@@ -19,6 +19,8 @@ const CANDLE = "rgba(255,255,255,0.5)";
 const CURSOR = "rgba(224,176,64,0.9)";
 const BUCKET_SEC = 60;
 const MAIN_INK = { l: 0.72, c: 0.13, a: 1.0 };
+// mirrors `Plot::DEFAULT` — what a node declaring no plots draws as once the viz is asked for it.
+const DEFAULT_PLOT = { slots: [], range: null, guides: [], labels: [], inks: [], overlay: false, solo: false, bars: false, candles: false };
 
 // lightweight-charts' color parser predates oklch(); the browser's doesn't — round-trip through a
 // 1×1 canvas to plain rgba.
@@ -203,7 +205,7 @@ function teardown(chart) {
 // own price scale (layers mix units — RSI 0–100 next to λ ~1e-6), except plots asking to be `solo`,
 // which take a pane of their own right under their layer's. Gate nodes get one dedicated pane at
 // the bottom instead: 0/1 square waves on the shared time axis.
-function addIndicatorPanes(chart, data, st, price) {
+function addIndicatorPanes(chart, data, st, price, viewSpec) {
   const series = data.series ?? [];
   const depth = new Map();
   // the server contracts hidden nodes out of `deps`, so every name resolves; a miss would otherwise
@@ -222,7 +224,7 @@ function addIndicatorPanes(chart, data, st, price) {
   const len = (s) => s.dims.reduce((a, b) => a * b, 1);
   // One drawable per plot, not per node: scale is what shares an axis, so a node whose out mixes
   // units (a quantity next to a price) draws as several, each picking its own `slots` of `vals`.
-  const explode = (s) => s.plots.map((plot, pi) => ({
+  const explode = (s) => (s.plots.length ? s.plots : [DEFAULT_PLOT]).map((plot, pi) => ({
     node: s.node,
     key: `${s.node}#${pi}`,
     plot,
@@ -234,12 +236,16 @@ function addIndicatorPanes(chart, data, st, price) {
   const drawable = series.filter((s) => depth.get(s.node) >= 1 && s.node !== data.price_node).flatMap(explode);
   // a gate nobody consumes gates nothing (same rule as the DAG panel)
   const gateSet = new Set(series.flatMap((s) => s.gates));
-  const gates = drawable.filter((s) => gateSet.has(s.node) && !s.plot.overlay);
 
   let slots = 0;
   const slot0 = new Map();
   for (const s of drawable) { slot0.set(s.key, slots); slots += s.slots.length; }
   const hue = (s, i) => (360 * (slot0.get(s.key) + i)) / Math.max(slots, 1);
+  // Filtered only after the hue pass, and over the whole of `drawable`: a node claims its colour
+  // slots whether drawn or not, so hiding one does not recolour every other one.
+  const hidden = new Set(viewSpec.hidden ?? []);
+  const shown = drawable.filter((s) => !hidden.has(s.node));
+  const gates = shown.filter((s) => gateSet.has(s.node) && !s.plot.overlay);
   const ink = (s, i) => s.plot.inks[i] ?? MAIN_INK;
   // `k` indexes the plot's own elements; `slots[k]` is where that element sits in the node's flat out.
   const val = (s, p, k) => p.vals[s.slots[k]];
@@ -269,8 +275,8 @@ function addIndicatorPanes(chart, data, st, price) {
     ];
   };
 
-  const overlays = drawable.filter((s) => s.plot.overlay);
-  const indicators = drawable.filter((s) => !gateSet.has(s.node) && !s.plot.overlay);
+  const overlays = shown.filter((s) => s.plot.overlay);
+  const indicators = shown.filter((s) => !gateSet.has(s.node) && !s.plot.overlay);
   const drawLayer = (nodes) => {
     if (!nodes.length) return;
     const pane = chart.panes().length;
@@ -411,7 +417,7 @@ export function draw(chart, data, viewSpec, lib) {
   st.series.push(vol);
   tipFrom(st.tip, bars, (b) => b.ts_ms / 1000, (b) => `V ${fmt(b.vals[4])}`, 1, "rgba(120,120,180,0.9)");
 
-  addIndicatorPanes(chart, data, st, candle);
+  addIndicatorPanes(chart, data, st, candle, viewSpec);
   attachTooltip(chart.chartElement(), chart, st.tip, st);
 
   chart.panes().forEach((p, i) => p.setStretchFactor(i === 0 ? 3 : i === st.gatePane ? 0.5 : 1));

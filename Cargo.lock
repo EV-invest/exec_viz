@@ -11,6 +11,7 @@ dependencies = [
  "cfg-if",
  "getrandom 0.3.4",
  "once_cell",
+ "serde",
  "version_check",
  "zerocopy",
 ]
@@ -1275,6 +1276,7 @@ dependencies = [
  "gloo-timers",
  "js-sys",
  "serde",
+ "serde_json",
  "v_utils",
  "wasm-bindgen",
  "wasm-bindgen-futures",

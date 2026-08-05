@@ -199,6 +199,11 @@ pub fn Replay() -> Element {
 						}
 					}
 				}
+				span {
+					class: if state::VIEWS().is_empty() { "btn off" } else { "btn" },
+					onclick: move |_| state::clear_views(),
+					"reset views (⇧C)"
+				}
 				span { class: "pos", "speed {state::SPEED()} ev/poll (-/=)" }
 				span {
 					class: if bar_waiting || waiting("Classify") { "pos waiting" } else { "pos" },
@@ -257,13 +262,21 @@ fn seed(mut api: PackedApi) {
 #[component]
 fn ChartPane() -> Element {
 	let day = use_context::<Resource<Result<String, String>>>();
+	let topology = use_context::<Resource<Result<Vec<TopoNode>, String>>>();
 	let mut banner = use_context::<Signal<Option<String>>>();
 	use_effect(move || {
+		// Read unconditionally, and before the day gate: this is what subscribes the effect to a
+		// toggle, and re-mounting is the redraw path (`draw` tears its own series down at the top).
+		let hidden: Vec<String> = match &*topology.read() {
+			Some(Ok(t)) => t.iter().filter(|n| !state::shown(n)).map(|n| n.node.clone()).collect(),
+			_ => Vec::new(),
+		};
 		if let Some(Ok(json)) = &*day.read() {
 			let json = json.clone();
+			let spec = serde_json::json!({ "theme": "#131722", "hidden": hidden }).to_string();
 			spawn(async move {
 				let el = chart_el().expect("the chart host renders with this pane");
-				banner.set(v_utils::lwc::mount(el, "/lwc_draw.js", &json, r##"{"theme":"#131722"}"##).await);
+				banner.set(v_utils::lwc::mount(el, "/lwc_draw.js", &json, &spec).await);
 			});
 		}
 	});
@@ -334,6 +347,8 @@ async fn handle_key(key: &str, bar: Option<&str>) {
 		"c" => state::step_until("Classify").await,
 		"n" => state::step_until_change().await,
 		"l" => state::follow().await,
+		"v" => state::toggle_view(),
+		"C" => state::clear_views(),
 		_ => {}
 	}
 }

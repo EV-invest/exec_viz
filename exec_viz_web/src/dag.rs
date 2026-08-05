@@ -71,6 +71,17 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 		cols[l].push(n.clone());
 	}
 
+	// `v` acts on what the pointer is over, and a buffer glyph has nothing drawn of its own — it
+	// resolves to the series it retains. Owned copies because `src_of` borrows `hist`.
+	let buf_src: AHashMap<String, String> = hist.iter().map(|(src, (buf, _))| (buf.clone(), src.clone())).collect();
+	let defaults: AHashMap<String, bool> = topology.iter().map(|n| (n.node.clone(), !n.plots.is_empty())).collect();
+	use_effect(move || {
+		*state::HOVERED.write() = hover().node().map(|h| {
+			let h = buf_src.get(h).map_or(h, String::as_str);
+			(h.to_string(), *defaults.get(h).expect("hover names a topology node"))
+		});
+	});
+
 	let topo = topology.clone();
 	use_effect(move || {
 		let Some(frame) = state::FRAME() else { return };
@@ -194,6 +205,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 								if selected { " sel" } else { "" },
 								if hist.contains_key(&n.node) { " hist" } else { "" },
 							);
+							let muted = !state::shown(&n);
 							let name = n.node.clone();
 							let clicked = n.node.clone();
 							let node = n.node.clone();
@@ -210,6 +222,9 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 									onmouseenter: move |_| hover.set(Hover::Card(name.clone())),
 									onmouseleave: move |_| hover.set(Hover::None),
 									onclick: move |_| state::toggle_select(&clicked),
+									if muted {
+										span { class: "dag-hidden", "⊘" }
+									}
 									// transmission-gate glyph: `input ─[ switch ]→ block`, docked on the input wire
 									for g in n.gates.clone() {
 										{
@@ -241,6 +256,9 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 														e.stop_propagation();
 														state::toggle_select(&clicked);
 													},
+													if !state::shown(gt) {
+														span { class: "dag-hidden", "⊘" }
+													}
 													svg { class: "dag-gate-sw", view_box: "0 0 24 10",
 														line { x1: "0", y1: "5", x2: "7", y2: "5", stroke: "currentColor", stroke_width: "1.2" }
 														line { x1: "17", y1: "5", x2: "24", y2: "5", stroke: "currentColor", stroke_width: "1.2" }

@@ -7,12 +7,13 @@
 
 use std::future::Future;
 
-use ahash::AHashSet;
+use ahash::{AHashMap, AHashSet};
 use dioxus::prelude::*;
 use exec_viz::api_types::{ActivationFrame, SeekReq, SeekTsReq, StepReq, StepUntilChangeReq, StepUntilReq, TopoNode};
 use gloo_net::http::Request;
 use wasm_bindgen::{JsCast as _, JsValue};
 
+const VIEWS_KEY: &str = "exec-viz-views";
 pub static FRAME: GlobalSignal<Option<ActivationFrame>> = Signal::global(|| None);
 pub static PLAYING: GlobalSignal<bool> = Signal::global(|| false);
 /// Cursor rides the tape's growing end. On by default so a page opened against a live run needs no
@@ -25,6 +26,34 @@ pub static ERROR: GlobalSignal<Option<String>> = Signal::global(|| None);
 pub static SELECTED: GlobalSignal<AHashSet<String>> = Signal::global(AHashSet::new);
 /// Key of the control whose op outran the recording and is re-issuing itself.
 pub static WAITING: GlobalSignal<Option<String>> = Signal::global(|| None);
+/// Explicit per-node chart-visibility overrides. Absent = the node's own default, which a node
+/// declaring no plots asks to be off. Cached in localStorage, so it outlives both a reload and a
+/// fresh run of the strategy — node names are what it keys on, and those are stable across runs.
+/// Overrides rather than the hidden set: the meaning holds when a node's `PLOTS` changes upstream.
+pub static VIEWS: GlobalSignal<AHashMap<String, bool>> = Signal::global(load_views);
+/// The DAG node under the pointer with its own default, buffers resolved to the series they retain
+/// — what `v` acts on.
+pub static HOVERED: GlobalSignal<Option<(String, bool)>> = Signal::global(|| None);
+
+pub fn shown(n: &TopoNode) -> bool {
+	VIEWS.read().get(&n.node).copied().unwrap_or(!n.plots.is_empty())
+}
+
+pub fn toggle_view() {
+	// nothing under the pointer is nothing to toggle
+	let Some((node, default)) = HOVERED.peek().clone() else { return };
+	let mut v = VIEWS.write();
+	let now = v.get(&node).copied().unwrap_or(default);
+	v.insert(node, !now);
+	save_views(&v);
+}
+
+pub fn clear_views() {
+	let mut v = VIEWS.write();
+	v.clear();
+	save_views(&v);
+}
+
 /// Empty until the recording's first tick closes: the server withholds a half-built topology, and
 /// the resource stays `None` (= "loading…") until there is a whole one.
 pub async fn fetch_topology() -> Result<Vec<TopoNode>, String> {
@@ -99,6 +128,23 @@ pub fn speed_up() {
 pub fn speed_down() {
 	let v = *SPEED.peek();
 	*SPEED.write() = (v / 2).max(1);
+}
+/// No entry, no storage handle, or one written by an older shape: no overrides yet. That is
+/// genuinely absent state rather than a swallowed error — the defaults are a complete answer.
+fn load_views() -> AHashMap<String, bool> {
+	let Ok(Some(store)) = local_storage() else { return AHashMap::new() };
+	let Ok(Some(raw)) = store.get_item(VIEWS_KEY) else { return AHashMap::new() };
+	serde_json::from_str(&raw).unwrap_or_default()
+}
+
+fn save_views(views: &AHashMap<String, bool>) {
+	let Ok(Some(store)) = local_storage() else { return };
+	let json = serde_json::to_string(views).expect("a map of string to bool serializes");
+	store.set_item(VIEWS_KEY, &json).expect("a handle localStorage granted takes a write this small");
+}
+
+fn local_storage() -> Result<Option<web_sys::Storage>, JsValue> {
+	web_sys::window().expect("wasm32 target always runs in a browser").local_storage()
 }
 /// Bumped by each retrying op, so a newer one supersedes an older one's loop.
 static GENERATION: GlobalSignal<u64> = Signal::global(|| 0);
