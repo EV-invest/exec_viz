@@ -192,7 +192,7 @@ impl Observer for Rec<'_> {
 	/// ask for one only on a tick that survives. It cannot be known here: at record time every tick
 	/// is still in the whole-kept tail, and the strides [`Tape::thin`] will grow through depend on how
 	/// much longer the run goes. Guessing costs fidelity on a tick a client can still seek to.
-	fn want(&self) -> Want {
+	fn want(&self, _: &'static str) -> Want {
 		Want::Jac
 	}
 
@@ -741,7 +741,7 @@ mod tests {
 			vals: Some(vals),
 			dep_dims: &[],
 			jac: None,
-			exact_jac: None,
+			exact: false,
 			formula: None,
 			deriv: None,
 			trace: None,
