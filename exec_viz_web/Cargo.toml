@@ -12,6 +12,7 @@ publish = false
 # wasm-only bin. `exec_viz` is pulled in with default features off — that leaves just `api_types`,
 # so none of the axum/tokio server half is dragged onto the wasm target.
 [dependencies]
+ahash.workspace = true
 dioxus.workspace = true
 dockviewers_dioxus.workspace = true
 exec_viz.workspace = true

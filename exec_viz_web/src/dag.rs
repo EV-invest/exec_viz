@@ -4,8 +4,9 @@
 //! by the tick's finite-difference Jacobian — values and sensitivities on the computation graph
 //! itself, à la Jane Street's "Computations that differentiate, debug and document themselves".
 
-use std::collections::HashMap;
+use std::collections::BTreeSet;
 
+use ahash::{AHashMap, AHashSet};
 use dioxus::prelude::*;
 use exec_viz::api_types::{Activation, TopoNode};
 
@@ -16,20 +17,20 @@ const DAG_ID: &str = "dag-root";
 #[component]
 pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	let mut hover = use_signal(|| Hover::None);
-	let mut ranges = use_signal(HashMap::<String, Vec<(f64, f64)>>::new);
+	let mut ranges = use_signal(AHashMap::<String, Vec<(f64, f64)>>::new);
 	let mut edges = use_signal(Vec::<Edge>::new);
 
 	// One gate switches any number of nodes — a screener gates every node downstream of it — and the
 	// glyph is drawn once per card it switches, so its ids carry the card that owns the copy.
-	let gate_set: std::collections::HashSet<&str> = topology.iter().flat_map(|n| n.gates.iter()).map(String::as_str).collect();
+	let gate_set: AHashSet<&str> = topology.iter().flat_map(|n| n.gates.iter()).map(String::as_str).collect();
 
 	// A node no other node reads is what the graph was declared for — `graph!` instantiates nothing
 	// an output does not reach, so a leaf of the drawn graph *is* an output.
-	let consumed: std::collections::HashSet<&str> = topology.iter().flat_map(|n| n.deps.iter()).map(String::as_str).collect();
+	let consumed: AHashSet<&str> = topology.iter().flat_map(|n| n.deps.iter()).map(String::as_str).collect();
 
 	// A buffer is an adornment on its source, not a peer: `source -> (buffer node, depth)`. Its
 	// single dep is the series it retains, and one buffer per series makes the map total.
-	let hist: HashMap<String, (String, String)> = topology
+	let hist: AHashMap<String, (String, String)> = topology
 		.iter()
 		.filter_map(|n| {
 			let depth = n.node.strip_suffix('>')?.rsplit_once(',')?.1.trim().to_string();
@@ -40,7 +41,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 		.collect();
 
 	// a dep naming a buffer resolves to the *series* card, which is where the buffer is drawn
-	let src_of: HashMap<&str, &str> = hist.iter().map(|(src, (buf, _))| (buf.as_str(), src.as_str())).collect();
+	let src_of: AHashMap<&str, &str> = hist.iter().map(|(src, (buf, _))| (buf.as_str(), src.as_str())).collect();
 
 	// `level(node) = max(1 + level(deps), level(gates))`, roots 0, over the *drawn* graph: a hidden
 	// node must not consume a column, or its consumers sit one right of the card they visibly
@@ -48,7 +49,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	// belongs after that gate's inputs, not beside the roots — and it is drawn *on* this card, so
 	// it contributes its own level rather than one past it. One pass works because the server sends
 	// nodes in step (= topo) order.
-	let mut level: HashMap<String, usize> = HashMap::new();
+	let mut level: AHashMap<String, usize> = AHashMap::new();
 	let mut cols: Vec<Vec<TopoNode>> = Vec::new();
 	for n in &topology {
 		let at = |x: &String| *level.get(src_of.get(x.as_str()).map_or(x.as_str(), |s| *s)).expect("topo order: dep precedes node");
@@ -85,7 +86,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 				}
 			}
 		}
-		let dep_lens: HashMap<String, usize> = topo.iter().map(|n| (n.node.clone(), n.dims.iter().product())).collect();
+		let dep_lens: AHashMap<String, usize> = topo.iter().map(|n| (n.node.clone(), n.dims.iter().product())).collect();
 		let acts = frame.activations.clone();
 		spawn(async move {
 			// measure one timer tick after the DOM patch so fresh cell rects are non-zero
@@ -95,14 +96,67 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	});
 
 	let frame = state::FRAME();
-	let acts: HashMap<String, (bool, String, Option<Vec<Option<f64>>>)> = frame
+	let acts: AHashMap<String, (bool, String, Option<Vec<Option<f64>>>)> = frame
 		.iter()
 		.flat_map(|f| f.activations.iter())
 		.map(|a| (a.node.clone(), (a.fired, a.out.clone(), a.vals.clone())))
 		.collect();
-	// `plots[].labels` indexed through `plots[].slots` (empty `slots` claims all of them) — the names
-	// the hover tips read a node's values out under, and the same ones the chart crosshair prints.
-	let names: HashMap<String, Vec<String>> = topology
+	// A gate that has never fired reads shut, same as the glyph draws it: there is no standing value
+	// yet to say the switch is closed, and a graph that has not resolved its screener is not running
+	// what sits behind it either.
+	let gate_open = |g: &str| acts.get(g).and_then(|(_, _, v)| v.as_ref()).is_some_and(|v| v[0].is_some_and(|x| x != 0.0));
+
+	// `fired` already says a node did not run, but not *why*: a clocked node between publications
+	// reads the same as one the sweep is skipping, so unlit alone strobes rather than informs. What
+	// separates them is the gates, and a gate suppresses what *feeds* it as much as what reads it —
+	// a node whose every consumer sits behind the same gate is read by nobody while that gate is
+	// false, so the sweep skips it too. `trading_data_macros::demand` takes that closure at compile
+	// time; this is the same intersection retaken in reverse step order against the gates' current
+	// readings. A gate and a buffer are pinned there — held state cannot re-warm through a skip — so
+	// neither goes dark nor carries suppression on to what feeds it.
+	// Intersected with `!fired` at the end, which is what keeps the two pins the wire does *not* name
+	// (folds, latches) from reading dark: the graph keeps those warm, and a node that ran said so.
+	let mut consumers: AHashMap<&str, Vec<&str>> = AHashMap::new();
+	for n in &topology {
+		for d in &n.deps {
+			consumers.entry(d.as_str()).or_default().push(n.node.as_str());
+		}
+	}
+	let pinned = |n: &str| gate_set.contains(n) || n.starts_with("Buffer<");
+	let mut suppressors: AHashMap<&str, BTreeSet<&str>> = AHashMap::new();
+	for n in topology.iter().rev() {
+		let mut s = BTreeSet::new();
+		if !pinned(&n.node) {
+			let mut demand: Option<BTreeSet<&str>> = None;
+			for c in consumers.get(n.node.as_str()).into_iter().flatten() {
+				let term = suppressors.get(c).expect("reverse step order: a consumer is resolved before what it reads");
+				demand = Some(demand.map_or_else(|| term.clone(), |d: BTreeSet<&str>| d.intersection(term).copied().collect()));
+			}
+			// an output answers to nobody, so nothing but its own gates can make it dormant
+			s = demand.unwrap_or_default();
+			s.extend(n.gates.iter().map(String::as_str));
+		}
+		suppressors.insert(&n.node, s);
+	}
+	let dormant: AHashSet<&str> = suppressors
+		.iter()
+		.filter(|(n, s)| s.iter().any(|g| !gate_open(g)) && !acts.get(**n).is_some_and(|(fired, _, _)| *fired))
+		.map(|(n, _)| *n)
+		.collect();
+	// `plots[].labels` is one name list per axis; their row-major cross product, indexed through
+	// `plots[].slots` (empty `slots` claims all of them), is the flat per-slot name the hover tips
+	// read a node's values out under. The axis lengths multiply out to the slot count — the dag
+	// crate const-asserts it — so every coordinate below is in range.
+	let crossed = |labels: &[Vec<String>], k: usize| {
+		let mut stride: usize = labels.iter().map(Vec::len).product();
+		let mut parts = Vec::with_capacity(labels.len());
+		for axis in labels {
+			stride /= axis.len();
+			parts.push(axis[(k / stride) % axis.len()].as_str());
+		}
+		parts.join(" ")
+	};
+	let names: AHashMap<String, Vec<String>> = topology
 		.iter()
 		.map(|n| {
 			let len: usize = n.dims.iter().product();
@@ -110,7 +164,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 			for p in &n.plots {
 				let slots: Vec<usize> = if p.slots.is_empty() { (0..len).collect() } else { p.slots.clone() };
 				for (k, s) in slots.into_iter().enumerate() {
-					named[s] = p.labels.get(k).cloned().unwrap_or_default();
+					named[s] = crossed(&p.labels, k);
 				}
 			}
 			(n.node.clone(), named)
@@ -133,8 +187,9 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 							let dep_hl = hovered_deps.contains(&n.node);
 							let selected = state::SELECTED().contains(&n.node);
 							let class = format!(
-								"dag-card{}{}{}{}",
+								"dag-card{}{}{}{}{}",
 								if fired { " lit" } else { "" },
+								if dormant.contains(n.node.as_str()) { " dark" } else { "" },
 								if dep_hl { " dep" } else { "" },
 								if selected { " sel" } else { "" },
 								if hist.contains_key(&n.node) { " hist" } else { "" },
@@ -161,7 +216,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 											let gt = topology.iter().find(|t| t.node == g).expect("gate listed in topology");
 											assert_eq!(gt.dims.iter().product::<usize>(), 1, "gate glyph assumes a scalar gate");
 											let (gfired, _, gvals) = acts.get(&g).cloned().unwrap_or((false, String::new(), None));
-											let open = gvals.as_ref().is_some_and(|v| v[0].is_some_and(|x| x != 0.0));
+											let open = gate_open(&g);
 											let gclass = format!(
 												"dag-gate{}{}",
 												if gfired { " lit" } else { "" },
@@ -350,7 +405,7 @@ struct Edge {
 /// Resolves every non-zero jac entry of the frame to pixel endpoints: dep concat slot →
 /// (dep node, local element) via prefix sums over the deps' lens, both cells measured against
 /// the `.dag` origin so the overlay is scroll-invariant.
-fn measure_edges(acts: &[Activation], dep_lens: &HashMap<String, usize>) -> Vec<Edge> {
+fn measure_edges(acts: &[Activation], dep_lens: &AHashMap<String, usize>) -> Vec<Edge> {
 	let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
 		return Vec::new();
 	};

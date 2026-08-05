@@ -5,8 +5,9 @@
 //! recorded yet. The server says so (`pending`) rather than blocking, and [`WAITING`] is how the UI
 //! shows which control is still chasing the feed.
 
-use std::{collections::HashSet, future::Future};
+use std::future::Future;
 
+use ahash::AHashSet;
 use dioxus::prelude::*;
 use exec_viz::api_types::{ActivationFrame, SeekReq, SeekTsReq, StepReq, StepUntilChangeReq, StepUntilReq, TopoNode};
 use gloo_net::http::Request;
@@ -21,7 +22,7 @@ pub static FOLLOW: GlobalSignal<bool> = Signal::global(|| true);
 pub static SPEED: GlobalSignal<usize> = Signal::global(|| 512);
 pub static ERROR: GlobalSignal<Option<String>> = Signal::global(|| None);
 /// Click-selected DAG nodes — the "skip to next change in any of these" set.
-pub static SELECTED: GlobalSignal<HashSet<String>> = Signal::global(HashSet::new);
+pub static SELECTED: GlobalSignal<AHashSet<String>> = Signal::global(AHashSet::new);
 /// Key of the control whose op outran the recording and is re-issuing itself.
 pub static WAITING: GlobalSignal<Option<String>> = Signal::global(|| None);
 /// Empty until the recording's first tick closes: the server withholds a half-built topology, and

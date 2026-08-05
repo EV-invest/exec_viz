@@ -665,7 +665,7 @@ impl From<&Plot> for PlotOut {
 					ink: ink(&g.ink),
 				})
 				.collect(),
-			labels: p.labels.iter().map(|l| l.to_string()).collect(),
+			labels: p.labels.iter().map(|axis| axis.iter().map(|l| l.to_string()).collect()).collect(),
 			inks: p.inks.iter().map(ink).collect(),
 			overlay: p.overlay,
 			solo: p.solo,

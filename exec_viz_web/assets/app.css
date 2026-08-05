@@ -203,6 +203,22 @@ html, body, #main {
   to { background: #161a26; }
 }
 
+/* Dormant: a gate this node's whole demand sits behind reads closed, so the sweep is skipping it —
+   as against an unlit card, which merely had nothing to do on this one tick. Cut in the same red the
+   gate glyph opens its switch in, and dashed, since the wire into this node is the thing that is not
+   there. */
+.dag-card.dark {
+  border-style: dashed;
+  border-color: #a33f45;
+  background: #160f11;
+  opacity: 0.45;
+}
+
+/* the heat is a live reading, and a dormant card is showing one it stopped taking */
+.dag-card.dark .dag-grid {
+  filter: grayscale(1);
+}
+
 .dag-card.dep {
   border-color: #7788dd;
   opacity: 0.9;
@@ -356,6 +372,8 @@ html, body, #main {
   color: #d0d4dc;
   white-space: pre;
   max-width: 60%;
+  max-height: 60%;
+  overflow: hidden;
 }
 
 .dag-out {

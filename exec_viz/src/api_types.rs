@@ -44,7 +44,9 @@ pub struct PlotOut {
 	pub slots: Vec<usize>,
 	pub range: Option<(f64, f64)>,
 	pub guides: Vec<GuideOut>,
-	pub labels: Vec<String>,
+	/// One name list per axis of the plot's shape, row-major — the cartesian product of them names
+	/// `slots` positionally. Empty = indices.
+	pub labels: Vec<Vec<String>>,
 	pub inks: Vec<InkOut>,
 	pub overlay: bool,
 	pub solo: bool,
@@ -52,9 +54,9 @@ pub struct PlotOut {
 	pub candles: bool,
 }
 
-/// One bucket's last fired flat out. What names its slots is the node's [`PlotOut::labels`], which
-/// is where a field worth reading belongs — the chart's crosshair line and the DAG panel's hover
-/// both read it from there.
+/// One bucket's last fired flat out. What names its slots is the node's [`PlotOut::labels`] crossed
+/// out, which is where a field worth reading belongs — the chart's crosshair line and the DAG
+/// panel's hover both read it from there.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PointOut {
 	pub ts_ms: i64,
