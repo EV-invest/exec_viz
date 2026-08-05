@@ -4,8 +4,9 @@
 //! by the tick's finite-difference Jacobian — values and sensitivities on the computation graph
 //! itself, à la Jane Street's "Computations that differentiate, debug and document themselves".
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
+use ahash::{AHashMap, AHashSet};
 use dioxus::prelude::*;
 use exec_viz::api_types::{Activation, TopoNode};
 
@@ -16,20 +17,20 @@ const DAG_ID: &str = "dag-root";
 #[component]
 pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	let mut hover = use_signal(|| Hover::None);
-	let mut ranges = use_signal(HashMap::<String, Vec<(f64, f64)>>::new);
+	let mut ranges = use_signal(AHashMap::<String, Vec<(f64, f64)>>::new);
 	let mut edges = use_signal(Vec::<Edge>::new);
 
 	// One gate switches any number of nodes — a screener gates every node downstream of it — and the
 	// glyph is drawn once per card it switches, so its ids carry the card that owns the copy.
-	let gate_set: std::collections::HashSet<&str> = topology.iter().flat_map(|n| n.gates.iter()).map(String::as_str).collect();
+	let gate_set: AHashSet<&str> = topology.iter().flat_map(|n| n.gates.iter()).map(String::as_str).collect();
 
 	// A node no other node reads is what the graph was declared for — `graph!` instantiates nothing
 	// an output does not reach, so a leaf of the drawn graph *is* an output.
-	let consumed: std::collections::HashSet<&str> = topology.iter().flat_map(|n| n.deps.iter()).map(String::as_str).collect();
+	let consumed: AHashSet<&str> = topology.iter().flat_map(|n| n.deps.iter()).map(String::as_str).collect();
 
 	// A buffer is an adornment on its source, not a peer: `source -> (buffer node, depth)`. Its
 	// single dep is the series it retains, and one buffer per series makes the map total.
-	let hist: HashMap<String, (String, String)> = topology
+	let hist: AHashMap<String, (String, String)> = topology
 		.iter()
 		.filter_map(|n| {
 			let depth = n.node.strip_suffix('>')?.rsplit_once(',')?.1.trim().to_string();
@@ -40,7 +41,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 		.collect();
 
 	// a dep naming a buffer resolves to the *series* card, which is where the buffer is drawn
-	let src_of: HashMap<&str, &str> = hist.iter().map(|(src, (buf, _))| (buf.as_str(), src.as_str())).collect();
+	let src_of: AHashMap<&str, &str> = hist.iter().map(|(src, (buf, _))| (buf.as_str(), src.as_str())).collect();
 
 	// `level(node) = max(1 + level(deps), level(gates))`, roots 0, over the *drawn* graph: a hidden
 	// node must not consume a column, or its consumers sit one right of the card they visibly
@@ -48,7 +49,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	// belongs after that gate's inputs, not beside the roots — and it is drawn *on* this card, so
 	// it contributes its own level rather than one past it. One pass works because the server sends
 	// nodes in step (= topo) order.
-	let mut level: HashMap<String, usize> = HashMap::new();
+	let mut level: AHashMap<String, usize> = AHashMap::new();
 	let mut cols: Vec<Vec<TopoNode>> = Vec::new();
 	for n in &topology {
 		let at = |x: &String| *level.get(src_of.get(x.as_str()).map_or(x.as_str(), |s| *s)).expect("topo order: dep precedes node");
@@ -85,7 +86,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 				}
 			}
 		}
-		let dep_lens: HashMap<String, usize> = topo.iter().map(|n| (n.node.clone(), n.dims.iter().product())).collect();
+		let dep_lens: AHashMap<String, usize> = topo.iter().map(|n| (n.node.clone(), n.dims.iter().product())).collect();
 		let acts = frame.activations.clone();
 		spawn(async move {
 			// measure one timer tick after the DOM patch so fresh cell rects are non-zero
@@ -95,7 +96,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	});
 
 	let frame = state::FRAME();
-	let acts: HashMap<String, (bool, String, Option<Vec<Option<f64>>>)> = frame
+	let acts: AHashMap<String, (bool, String, Option<Vec<Option<f64>>>)> = frame
 		.iter()
 		.flat_map(|f| f.activations.iter())
 		.map(|a| (a.node.clone(), (a.fired, a.out.clone(), a.vals.clone())))
@@ -115,14 +116,14 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	// neither goes dark nor carries suppression on to what feeds it.
 	// Intersected with `!fired` at the end, which is what keeps the two pins the wire does *not* name
 	// (folds, latches) from reading dark: the graph keeps those warm, and a node that ran said so.
-	let mut consumers: HashMap<&str, Vec<&str>> = HashMap::new();
+	let mut consumers: AHashMap<&str, Vec<&str>> = AHashMap::new();
 	for n in &topology {
 		for d in &n.deps {
 			consumers.entry(d.as_str()).or_default().push(n.node.as_str());
 		}
 	}
 	let pinned = |n: &str| gate_set.contains(n) || n.starts_with("Buffer<");
-	let mut suppressors: HashMap<&str, BTreeSet<&str>> = HashMap::new();
+	let mut suppressors: AHashMap<&str, BTreeSet<&str>> = AHashMap::new();
 	for n in topology.iter().rev() {
 		let mut s = BTreeSet::new();
 		if !pinned(&n.node) {
@@ -137,7 +138,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 		}
 		suppressors.insert(&n.node, s);
 	}
-	let dormant: std::collections::HashSet<&str> = suppressors
+	let dormant: AHashSet<&str> = suppressors
 		.iter()
 		.filter(|(n, s)| s.iter().any(|g| !gate_open(g)) && !acts.get(**n).is_some_and(|(fired, _, _)| *fired))
 		.map(|(n, _)| *n)
@@ -155,7 +156,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 		}
 		parts.join(" ")
 	};
-	let names: HashMap<String, Vec<String>> = topology
+	let names: AHashMap<String, Vec<String>> = topology
 		.iter()
 		.map(|n| {
 			let len: usize = n.dims.iter().product();
@@ -404,7 +405,7 @@ struct Edge {
 /// Resolves every non-zero jac entry of the frame to pixel endpoints: dep concat slot →
 /// (dep node, local element) via prefix sums over the deps' lens, both cells measured against
 /// the `.dag` origin so the overlay is scroll-invariant.
-fn measure_edges(acts: &[Activation], dep_lens: &HashMap<String, usize>) -> Vec<Edge> {
+fn measure_edges(acts: &[Activation], dep_lens: &AHashMap<String, usize>) -> Vec<Edge> {
 	let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
 		return Vec::new();
 	};

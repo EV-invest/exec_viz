@@ -1265,6 +1265,7 @@ dependencies = [
 name = "exec_viz_web"
 version = "0.1.0"
 dependencies = [
+ "ahash",
  "dioxus",
  "dockviewers_dioxus",
  "exec_viz",
