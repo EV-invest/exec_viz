@@ -48,6 +48,13 @@ function fmt(v) {
   return v.toPrecision(4);
 }
 
+// `plot.labels` names one axis of the plot's shape each; the plot's slots are their row-major cross
+// product, which is what every flat per-slot reading needs.
+function slotNames(plot) {
+  if (!plot.labels.length) return [];
+  return plot.labels.reduce((names, axis) => names.flatMap((n) => axis.map((a) => (n ? `${n} ${a}` : a))), [""]);
+}
+
 function tipFrom(tip, rows, timeOf, textOf, pane, color) {
   const m = new Map();
   for (const r of rows) {
@@ -236,6 +243,31 @@ function addIndicatorPanes(chart, data, st, price) {
   const ink = (s, i) => s.plot.inks[i] ?? MAIN_INK;
   // `k` indexes the plot's own elements; `slots[k]` is where that element sits in the node's flat out.
   const val = (s, p, k) => p.vals[s.slots[k]];
+  // A plot of several axes that declares its slots stack is read one marginal line per axis, each
+  // index summing the slots that share it. The flat cross product is a line per slot — 25 of them
+  // for a 5×5 — which is a tooltip taller than the chart. Summing needs `bars`: on a plot whose
+  // slots do not add up (a matrix of prices) a marginal is a number of nothing.
+  const tipText = (s) => {
+    const n = s.slots.length;
+    if (s.plot.labels.length > 1 && s.plot.bars) return (p) => [
+      { text: s.node, color: oklch(ink(s, 0), hue(s, 0)) },
+      ...s.plot.labels.map((axis, a) => {
+        const stride = s.plot.labels.slice(a + 1).reduce((x, ax) => x * ax.length, 1);
+        const cells = axis.map((name, i) => {
+          let v = 0;
+          for (let k = 0; k < n; k++) if (Math.floor(k / stride) % axis.length === i) v += val(s, p, k);
+          return `${name} ${fmt(v)}`;
+        });
+        return { text: `  ${cells.join("  ")}`, color: oklch(ink(s, 0), hue(s, 0)) };
+      }),
+    ];
+    const names = slotNames(s.plot);
+    const label = (k) => names[k] ?? (n > 1 ? `[${k}]` : "");
+    return (p) => [
+      { text: s.node, color: oklch(ink(s, 0), hue(s, 0)) },
+      ...Array.from({ length: n }, (_, k) => ({ text: `  ${label(k) ? label(k) + " " : ""}${fmt(val(s, p, k))}`, color: oklch(ink(s, k), hue(s, k)) })),
+    ];
+  };
 
   const overlays = drawable.filter((s) => s.plot.overlay);
   const indicators = drawable.filter((s) => !gateSet.has(s.node) && !s.plot.overlay);
@@ -249,13 +281,7 @@ function addIndicatorPanes(chart, data, st, price) {
         const [minValue, maxValue] = s.plot.range;
         opts.autoscaleInfoProvider = () => ({ priceRange: { minValue, maxValue } });
       }
-      const label = (k) => s.plot.labels[k] ?? (n > 1 ? `[${k}]` : "");
-      tipFrom(st.tip, s.points, (p) => p.ts_ms / 1000,
-        (p) => [
-          { text: s.node, color: oklch(ink(s, 0), hue(s, 0)) },
-          ...Array.from({ length: n }, (_, k) => ({ text: `  ${label(k) ? label(k) + " " : ""}${fmt(val(s, p, k))}`, color: oklch(ink(s, k), hue(s, k)) })),
-        ],
-        pane);
+      tipFrom(st.tip, s.points, (p) => p.ts_ms / 1000, tipText(s), pane);
       let guideHost = null;
       if (s.plot.bars) {
         // stacked histogram: per-point cumulative segments, largest drawn first so each later
@@ -289,7 +315,7 @@ function addIndicatorPanes(chart, data, st, price) {
         guideHost.createPriceLine({ price: g.value, color: oklch(g.ink, hue(s, 0)), lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: false, title: g.label });
       }
     }
-    const text = nodes.map((s) => (s.plot.labels.length ? `${s.node} (${s.plot.labels.join(" · ")})` : s.node)).join("   ");
+    const text = nodes.map((s) => (s.plot.labels.length ? `${s.node} (${slotNames(s.plot).join(" · ")})` : s.node)).join("   ");
     createTextWatermark(chart.panes()[pane], { horzAlign: "left", vertAlign: "top", lines: [{ text, color: "rgba(150,160,180,0.55)", fontSize: 10 }] });
   };
   for (const d of [...new Set(indicators.map((s) => depth.get(s.node)))].sort((a, b) => a - b)) {
@@ -303,17 +329,13 @@ function addIndicatorPanes(chart, data, st, price) {
   // price-denominated series drawn on the candle pane (pane 0), on the shared price scale.
   for (const s of overlays) {
     const n = s.slots.length;
-    const label = (k) => s.plot.labels[k] ?? (n > 1 ? `[${k}]` : "");
     tipFrom(st.tip, s.points, (p) => p.ts_ms / 1000,
       s.plot.candles
         ? (p) => [{
           text: `${s.node}  O ${fmt(val(s, p, 0))}  H ${fmt(val(s, p, 1))}  L ${fmt(val(s, p, 2))}  C ${fmt(val(s, p, 3))}`,
           color: oklch(ink(s, 0), hue(s, 0)),
         }]
-        : (p) => [
-          { text: s.node, color: oklch(ink(s, 0), hue(s, 0)) },
-          ...Array.from({ length: n }, (_, k) => ({ text: `  ${label(k) ? label(k) + " " : ""}${fmt(val(s, p, k))}`, color: oklch(ink(s, k), hue(s, k)) })),
-        ],
+        : tipText(s),
       0);
     let guideHost = null;
     if (s.plot.candles) {

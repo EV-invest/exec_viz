@@ -100,8 +100,19 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 		.flat_map(|f| f.activations.iter())
 		.map(|a| (a.node.clone(), (a.fired, a.out.clone(), a.vals.clone())))
 		.collect();
-	// `plots[].labels` indexed through `plots[].slots` (empty `slots` claims all of them) — the names
-	// the hover tips read a node's values out under, and the same ones the chart crosshair prints.
+	// `plots[].labels` is one name list per axis; their row-major cross product, indexed through
+	// `plots[].slots` (empty `slots` claims all of them), is the flat per-slot name the hover tips
+	// read a node's values out under. The axis lengths multiply out to the slot count — the dag
+	// crate const-asserts it — so every coordinate below is in range.
+	let crossed = |labels: &[Vec<String>], k: usize| {
+		let mut stride: usize = labels.iter().map(Vec::len).product();
+		let mut parts = Vec::with_capacity(labels.len());
+		for axis in labels {
+			stride /= axis.len();
+			parts.push(axis[(k / stride) % axis.len()].as_str());
+		}
+		parts.join(" ")
+	};
 	let names: HashMap<String, Vec<String>> = topology
 		.iter()
 		.map(|n| {
@@ -110,7 +121,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 			for p in &n.plots {
 				let slots: Vec<usize> = if p.slots.is_empty() { (0..len).collect() } else { p.slots.clone() };
 				for (k, s) in slots.into_iter().enumerate() {
-					named[s] = p.labels.get(k).cloned().unwrap_or_default();
+					named[s] = crossed(&p.labels, k);
 				}
 			}
 			(n.node.clone(), named)

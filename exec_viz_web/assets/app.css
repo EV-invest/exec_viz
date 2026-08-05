@@ -356,6 +356,8 @@ html, body, #main {
   color: #d0d4dc;
   white-space: pre;
   max-width: 60%;
+  max-height: 60%;
+  overflow: hidden;
 }
 
 .dag-out {
