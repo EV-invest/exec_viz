@@ -100,6 +100,48 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 		.flat_map(|f| f.activations.iter())
 		.map(|a| (a.node.clone(), (a.fired, a.out.clone(), a.vals.clone())))
 		.collect();
+	// A gate that has never fired reads shut, same as the glyph draws it: there is no standing value
+	// yet to say the switch is closed, and a graph that has not resolved its screener is not running
+	// what sits behind it either.
+	let gate_open = |g: &str| acts.get(g).and_then(|(_, _, v)| v.as_ref()).is_some_and(|v| v[0].is_some_and(|x| x != 0.0));
+
+	// `fired` already says a node did not run, but not *why*: a clocked node between publications
+	// reads the same as one the sweep is skipping, so unlit alone strobes rather than informs. What
+	// separates them is the gates, and a gate suppresses what *feeds* it as much as what reads it —
+	// a node whose every consumer sits behind the same gate is read by nobody while that gate is
+	// false, so the sweep skips it too. `trading_data_macros::demand` takes that closure at compile
+	// time; this is the same intersection retaken in reverse step order against the gates' current
+	// readings. A gate and a buffer are pinned there — held state cannot re-warm through a skip — so
+	// neither goes dark nor carries suppression on to what feeds it.
+	// Intersected with `!fired` at the end, which is what keeps the two pins the wire does *not* name
+	// (folds, latches) from reading dark: the graph keeps those warm, and a node that ran said so.
+	let mut consumers: HashMap<&str, Vec<&str>> = HashMap::new();
+	for n in &topology {
+		for d in &n.deps {
+			consumers.entry(d.as_str()).or_default().push(n.node.as_str());
+		}
+	}
+	let pinned = |n: &str| gate_set.contains(n) || n.starts_with("Buffer<");
+	let mut suppressors: HashMap<&str, std::collections::BTreeSet<&str>> = HashMap::new();
+	for n in topology.iter().rev() {
+		let mut s = std::collections::BTreeSet::new();
+		if !pinned(&n.node) {
+			let mut demand: Option<std::collections::BTreeSet<&str>> = None;
+			for c in consumers.get(n.node.as_str()).into_iter().flatten() {
+				let term = suppressors.get(c).expect("reverse step order: a consumer is resolved before what it reads");
+				demand = Some(demand.map_or_else(|| term.clone(), |d: std::collections::BTreeSet<&str>| d.intersection(term).copied().collect()));
+			}
+			// an output answers to nobody, so nothing but its own gates can make it dormant
+			s = demand.unwrap_or_default();
+			s.extend(n.gates.iter().map(String::as_str));
+		}
+		suppressors.insert(&n.node, s);
+	}
+	let dormant: std::collections::HashSet<&str> = suppressors
+		.iter()
+		.filter(|(n, s)| s.iter().any(|g| !gate_open(g)) && !acts.get(**n).is_some_and(|(fired, _, _)| *fired))
+		.map(|(n, _)| *n)
+		.collect();
 	// `plots[].labels` is one name list per axis; their row-major cross product, indexed through
 	// `plots[].slots` (empty `slots` claims all of them), is the flat per-slot name the hover tips
 	// read a node's values out under. The axis lengths multiply out to the slot count — the dag
@@ -144,8 +186,9 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 							let dep_hl = hovered_deps.contains(&n.node);
 							let selected = state::SELECTED().contains(&n.node);
 							let class = format!(
-								"dag-card{}{}{}{}",
+								"dag-card{}{}{}{}{}",
 								if fired { " lit" } else { "" },
+								if dormant.contains(n.node.as_str()) { " dark" } else { "" },
 								if dep_hl { " dep" } else { "" },
 								if selected { " sel" } else { "" },
 								if hist.contains_key(&n.node) { " hist" } else { "" },
@@ -172,7 +215,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 											let gt = topology.iter().find(|t| t.node == g).expect("gate listed in topology");
 											assert_eq!(gt.dims.iter().product::<usize>(), 1, "gate glyph assumes a scalar gate");
 											let (gfired, _, gvals) = acts.get(&g).cloned().unwrap_or((false, String::new(), None));
-											let open = gvals.as_ref().is_some_and(|v| v[0].is_some_and(|x| x != 0.0));
+											let open = gate_open(&g);
 											let gclass = format!(
 												"dag-gate{}{}",
 												if gfired { " lit" } else { "" },

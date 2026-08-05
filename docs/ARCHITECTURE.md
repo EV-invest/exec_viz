@@ -65,7 +65,7 @@ flowchart LR
   poll loop and the two JS→Rust bridges (keys, chart clicks).
 - `dag` — the activations panel: one column per topo level, a per-node element grid heat-
   colored by running min/max, and an SVG overlay whose edge weights are the tick's
-  finite-difference Jacobian.
+  finite-difference Jacobian. A card is lit where it fired, cut where it is dormant.
 - `keyboard` — a document listener forwarding our keys onto a channel; the component side
   drains it *inside* the dioxus runtime, because a bare JS closure has no runtime context
   to await an API call in.
@@ -106,6 +106,11 @@ The per-node chart series is *not* subject to any of this: it is downsampled onl
   the types it names. `Buffering<C, J>` deps are rerouted onto the `Buffer<C, K>` node that
   serves them, and buffer nodes are dropped from the chart — a buffer's series is its
   source's element for element, so charting both draws every pane twice.
+- **Dormancy is re-derived, not sent.** `fired` says a node did not run, never why: a clocked node
+  between publications reads the same as one the sweep is skipping. Which gates suppress a node is a
+  closure `trading_data_macros::demand` takes at compile time; the client retakes it over `deps` and
+  `gates` against the tick's gate readings, so the wire keeps its shapes and none of the engine's
+  internals. What the wire cannot name — folds, latches — `fired` vetoes.
 - **Single-user study tool.** One mutex over the whole tape, linear scans for cursor ops.
   Both are marked `ponytail:` in the source with the upgrade path, and neither has come
   close to mattering.
