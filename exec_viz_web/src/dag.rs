@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 
 use ahash::{AHashMap, AHashSet};
 use dioxus::prelude::*;
-use exec_viz::api_types::{Activation, TopoNode};
+use exec_viz::api_types::{Activation, FidelityOut, TopoNode};
 
 use crate::state;
 
@@ -278,7 +278,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 														"{txt}"
 													}
 													// the glyph is scalar, so the card's own hover already names the one cell
-													if let Some(t) = tip(&names[&g], gvals.as_deref()).filter(|_| hover() == Hover::Gate(n.node.clone(), g.clone())) {
+													if let Some(t) = tip(&names[&g], gvals.as_deref(), None).filter(|_| hover() == Hover::Gate(n.node.clone(), g.clone())) {
 														div { class: "dag-tip", "{t}" }
 													}
 												}
@@ -344,14 +344,14 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 															}
 														}
 													}
-													if let Some(t) = tip(&names[buf], bvals.as_deref()).filter(|_| hovered_node.as_deref() == Some(b.as_str())) {
+													if let Some(t) = tip(&names[buf], bvals.as_deref(), None).filter(|_| hovered_node.as_deref() == Some(b.as_str())) {
 														div { class: "dag-tip", "{t}" }
 													}
 												}
 											}
 										}
 									}
-									if let Some(t) = tip(&names[&n.node], vals.as_deref()).filter(|_| hovered_node.as_deref() == Some(node.as_str())) {
+									if let Some(t) = tip(&names[&n.node], vals.as_deref(), Some(&n)).filter(|_| hovered_node.as_deref() == Some(node.as_str())) {
 										div { class: "dag-tip", "{t}" }
 									}
 								}
@@ -377,7 +377,9 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 								y2: "{e.y2}",
 								stroke: if e.w > 0.0 { "#26a69a" } else { "#ef5350" },
 								stroke_width: "{1.0 + 2.0 * e.mag}",
+								stroke_dasharray: if e.exact { "none" } else { "3 3" },
 								opacity: "{0.15 + 0.85 * e.mag}",
+								title { {if e.exact { "∂ exact" } else { "∂ ±h" }} }
 							}
 						}
 					}
@@ -418,6 +420,9 @@ struct Edge {
 	y2: f64,
 	w: f64,
 	mag: f64,
+	/// Differentiated, or finite-differenced. What makes the two visibly different edges rather than
+	/// one edge a reader has to take on faith.
+	exact: bool,
 }
 
 /// Resolves every non-zero jac entry of the frame to pixel endpoints: dep concat slot →
@@ -467,6 +472,7 @@ fn measure_edges(acts: &[Activation], dep_lens: &AHashMap<String, usize>) -> Vec
 					continue; // mid-remount: the next frame re-measures
 				}
 				out.push(Edge {
+					exact: a.exact,
 					from: (a.deps[dep_idx].clone(), local),
 					to: (a.node.clone(), i),
 					x1: fr.right() - root_rect.left(),
@@ -493,13 +499,27 @@ fn heat(range: Option<&(f64, f64)>, v: f64) -> f64 {
 /// A node's flat out read out under its slots' names, one per line — what the hover has to say, and
 /// what the chart's crosshair already prints beside the same series. `None` before the node's first
 /// fire, which is when there is nothing to read out.
-fn tip(names: &[String], vals: Option<&[Option<f64>]>) -> Option<String> {
+/// The hovered card's slots, and — where the node has algebra — what its Jacobian actually is.
+/// A node with no formula gets no derivative block, which is the visible difference between the
+/// fidelities in the one place a reader is already looking.
+fn tip(names: &[String], vals: Option<&[Option<f64>]>, node: Option<&TopoNode>) -> Option<String> {
 	let vals = vals?;
 	let line = |(k, v): (usize, &Option<f64>)| {
 		let name = names.get(k).filter(|n| !n.is_empty()).map_or_else(|| format!("[{k}]"), String::clone);
 		format!("{name}  {}", v.map_or_else(|| "·".to_string(), fmt_val))
 	};
-	Some(vals.iter().enumerate().map(line).collect::<Vec<_>>().join("\n"))
+	let mut out = vals.iter().enumerate().map(line).collect::<Vec<_>>().join("\n");
+	if let Some(n) = node {
+		match &n.fidelity {
+			FidelityOut::Exact => {}
+			FidelityOut::Partial { omits } => out.push_str(&format!("\n∂ omits {omits}")),
+			FidelityOut::Opaque { why } => out.push_str(&format!("\n∂ ±h — {why}")),
+		}
+		if let Some(d) = &n.deriv {
+			out.push_str(&format!("\n{d}"));
+		}
+	}
+	Some(out)
 }
 
 fn fmt_val(v: f64) -> String {

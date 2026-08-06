@@ -22,10 +22,10 @@ use std::{
 	time::Instant,
 };
 
-use trading_data_dag::{Fire, Ink, Observer, Plot, Want};
+use trading_data_dag::{Fidelity, Fire, Ink, Observer, Plot, Want};
 
 use crate::{
-	api_types::{Activation, ActivationFrame, DayOut, GuideOut, InkOut, PlotOut, PointOut, SeriesOut, TopoNode},
+	api_types::{Activation, ActivationFrame, DayOut, FidelityOut, GuideOut, InkOut, PlotOut, PointOut, SeriesOut, TopoNode},
 	cost::{Clock, Cost, TICK_STRIDE},
 };
 
@@ -210,6 +210,8 @@ impl Observer for Rec<'_> {
 				dims: fire.dims,
 				plots: fire.plots,
 				clock_ms: fire.clock.map(|tf| tf.duration().as_millis() as i64),
+				fidelity: fire.fidelity,
+				deriv: fire.deriv.map(|d| d.to_string()),
 			});
 		} else {
 			assert_eq!(r.raw[i], node, "step order shifted between ticks");
@@ -232,6 +234,7 @@ impl Observer for Rec<'_> {
 		if let Some(jac) = fire.jac {
 			r.acts.jac.extend_from_slice(jac);
 		}
+		r.acts.exact.push(fire.exact);
 		r.acts.close();
 
 		if r.timed {
@@ -282,6 +285,9 @@ struct Meta {
 	dims: &'static [usize],
 	plots: &'static [Plot],
 	clock_ms: Option<i64>,
+	/// Both are the kernel's, not the tick's, so they are recorded here once rather than per fire.
+	fidelity: Fidelity,
+	deriv: Option<String>,
 }
 
 struct TickMsg {
@@ -302,6 +308,9 @@ struct Acts {
 	outs: String,
 	vals: Vec<f64>,
 	jac: Vec<f64>,
+	/// How this tick's Jacobian was reached, positional with `ends`. Per tick rather than per node
+	/// because a node that did not fire drew nothing at all.
+	exact: Vec<bool>,
 	/// Positional with `topology`.
 	ends: Vec<Ends>,
 }
@@ -314,6 +323,7 @@ impl Acts {
 			out: &self.outs[start.out as usize..end.out as usize],
 			vals: span(start.vals, end.vals).map(|r| &self.vals[r]),
 			jac: span(start.jac, end.jac).map(|r| &self.jac[r]),
+			exact: self.exact[i],
 		})
 	}
 
@@ -350,6 +360,7 @@ struct ActRef<'a> {
 	out: &'a str,
 	vals: Option<&'a [f64]>,
 	jac: Option<&'a [f64]>,
+	exact: bool,
 }
 
 struct Tick {
@@ -398,6 +409,8 @@ impl Tape {
 				dims: m.dims.to_vec(),
 				plots: m.plots.iter().map(PlotOut::from).collect(),
 				cost_ns: None,
+				fidelity: m.fidelity.into(),
+				deriv: m.deriv,
 			};
 			self.series.push(SeriesOut {
 				node: topo.node.clone(),
@@ -565,6 +578,7 @@ impl Tape {
 							vals: held.vals.map(|v| v.iter().map(|x| x.is_finite().then_some(*x)).collect()),
 							jac: a.jac.map(|j| j.iter().map(|w| (!w.is_nan()).then_some(*w)).collect()),
 							cost_ns: self.cost[i].ns(),
+							exact: a.exact,
 						})
 					})
 					.collect()
@@ -647,6 +661,16 @@ impl Tape {
 		let mut f = self.frame();
 		f.pending = !self.sealed && !found;
 		f
+	}
+}
+
+impl From<Fidelity> for FidelityOut {
+	fn from(f: Fidelity) -> Self {
+		match f {
+			Fidelity::Exact => FidelityOut::Exact,
+			Fidelity::Partial(omits) => FidelityOut::Partial { omits: omits.to_string() },
+			Fidelity::Opaque(why) => FidelityOut::Opaque { why: why.to_string() },
+		}
 	}
 }
 

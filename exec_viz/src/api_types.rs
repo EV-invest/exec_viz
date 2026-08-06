@@ -19,6 +19,20 @@ pub struct TopoNode {
 	/// it has been stepped enough times for the estimate to be about the node rather than the
 	/// machine; see the recorder's `cost` module for what "estimated" means here.
 	pub cost_ns: Option<f64>,
+	pub fidelity: FidelityOut,
+	/// Simplified `∂out/∂dep`, one line per dep — `None` where the kernel has no algebra. Static:
+	/// the body is fixed, so only the values it is read against move tick to tick.
+	pub deriv: Option<String>,
+}
+
+/// Serde mirror of `trading_data_dag::Fidelity`: how much of what a node's body read its Jacobian
+/// covers. `omits`/`why` carry the kernel's own string, which is the whole point of the variant.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum FidelityOut {
+	Exact,
+	Partial { omits: String },
+	Opaque { why: String },
 }
 
 /// Serde mirror of `trading_data_dag::Ink`: l/c/a only — hue stays renderer-owned.
@@ -109,6 +123,9 @@ pub struct Activation {
 	pub jac: Option<Vec<Option<f64>>>,
 	/// As [`TopoNode::cost_ns`] — carried here too so a card can show it without a second fetch.
 	pub cost_ns: Option<f64>,
+	/// Whether [`jac`](Self::jac) was differentiated or finite-differenced. Not a claim about how
+	/// much of the dep's reach the column covers — that is [`TopoNode::fidelity`].
+	pub exact: bool,
 }
 
 /// Replay position + the last tick's activations. `tick` counts consumed events (0 = nothing
