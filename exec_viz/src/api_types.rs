@@ -121,11 +121,25 @@ pub struct Activation {
 	pub dims: Vec<usize>,
 	pub vals: Option<Vec<Option<f64>>>,
 	pub jac: Option<Vec<Option<f64>>>,
+	/// The reading [`jac`](Self::jac) is silent about, where the kernel has one. `None` where it has
+	/// none, and then the column is the whole of what can be said.
+	pub exact_block: Option<ExactBlock>,
 	/// As [`TopoNode::cost_ns`] — carried here too so a card can show it without a second fetch.
 	pub cost_ns: Option<f64>,
 	/// Whether [`jac`](Self::jac) was differentiated or finite-differenced. Not a claim about how
 	/// much of the dep's reach the column covers — that is [`TopoNode::fidelity`].
 	pub exact: bool,
+}
+
+/// A tick's derivative over every element a body reached back over, not just the newest: per dep in
+/// `deps` order, `vals.len() × widths[d]` row-major and appended, oldest lag first — so a dep's last
+/// element-group is exactly its [`Activation::jac`] column. `None` entries for the same reason
+/// `jac`'s are: NaN does not survive serde_json.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ExactBlock {
+	pub cols: Vec<Option<f64>>,
+	/// `lags(d) * slots(d)`, positional with `deps`; prefix sums recover `(dep, lag, slot)`.
+	pub widths: Vec<usize>,
 }
 
 /// Replay position + the last tick's activations. `tick` counts consumed events (0 = nothing

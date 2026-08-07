@@ -25,7 +25,7 @@ use std::{
 use trading_data_dag::{Fidelity, Fire, Ink, Observer, Plot, Want};
 
 use crate::{
-	api_types::{Activation, ActivationFrame, DayOut, FidelityOut, GuideOut, InkOut, PlotOut, PointOut, SeriesOut, TopoNode},
+	api_types::{Activation, ActivationFrame, DayOut, ExactBlock, FidelityOut, GuideOut, InkOut, PlotOut, PointOut, SeriesOut, TopoNode},
 	cost::{Clock, Cost, TICK_STRIDE},
 };
 
@@ -193,7 +193,7 @@ impl Observer for Rec<'_> {
 	/// is still in the whole-kept tail, and the strides [`Tape::thin`] will grow through depend on how
 	/// much longer the run goes. Guessing costs fidelity on a tick a client can still seek to.
 	fn want(&self, _: &'static str) -> Want {
-		Want::Jac
+		Want::Exact
 	}
 
 	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [bool], fire: Fire<'_>) {
@@ -233,6 +233,10 @@ impl Observer for Rec<'_> {
 		}
 		if let Some(jac) = fire.jac {
 			r.acts.jac.extend_from_slice(jac);
+		}
+		if let Some((block, widths)) = fire.exact_block {
+			r.acts.block.extend_from_slice(block);
+			r.acts.widths.extend_from_slice(widths);
 		}
 		r.acts.exact.push(fire.exact);
 		r.acts.close();
@@ -308,6 +312,8 @@ struct Acts {
 	outs: String,
 	vals: Vec<f64>,
 	jac: Vec<f64>,
+	block: Vec<f64>,
+	widths: Vec<usize>,
 	/// How this tick's Jacobian was reached, positional with `ends`. Per tick rather than per node
 	/// because a node that did not fire drew nothing at all.
 	exact: Vec<bool>,
@@ -317,12 +323,13 @@ struct Acts {
 impl Acts {
 	fn get(&self, i: usize) -> Option<ActRef<'_>> {
 		let end = *self.ends.get(i)?;
-		let start = if i == 0 { Ends { out: 0, vals: 0, jac: 0 } } else { self.ends[i - 1] };
+		let start = if i == 0 { Ends::default() } else { self.ends[i - 1] };
 		let span = |a: u32, b: u32| (b > a).then_some(a as usize..b as usize);
 		Some(ActRef {
 			out: &self.outs[start.out as usize..end.out as usize],
 			vals: span(start.vals, end.vals).map(|r| &self.vals[r]),
 			jac: span(start.jac, end.jac).map(|r| &self.jac[r]),
+			block: span(start.block, end.block).map(|r| (&self.block[r], &self.widths[start.widths as usize..end.widths as usize])),
 			exact: self.exact[i],
 		})
 	}
@@ -335,6 +342,8 @@ impl Acts {
 			out: end(self.outs.len()),
 			vals: end(self.vals.len()),
 			jac: end(self.jac.len()),
+			block: end(self.block.len()),
+			widths: end(self.widths.len()),
 		});
 	}
 
@@ -342,15 +351,19 @@ impl Acts {
 		self.outs.clear();
 		self.vals.clear();
 		self.jac.clear();
+		self.block.clear();
+		self.widths.clear();
 		self.ends.clear();
 	}
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct Ends {
 	out: u32,
 	vals: u32,
 	jac: u32,
+	block: u32,
+	widths: u32,
 }
 
 /// One node's slice of a tick. `vals: None` is the unfired reading — a fired node's columns always
@@ -360,6 +373,7 @@ struct ActRef<'a> {
 	out: &'a str,
 	vals: Option<&'a [f64]>,
 	jac: Option<&'a [f64]>,
+	block: Option<(&'a [f64], &'a [usize])>,
 	exact: bool,
 }
 
@@ -577,6 +591,10 @@ impl Tape {
 							dims: n.dims.clone(),
 							vals: held.vals.map(|v| v.iter().map(|x| x.is_finite().then_some(*x)).collect()),
 							jac: a.jac.map(|j| j.iter().map(|w| (!w.is_nan()).then_some(*w)).collect()),
+							exact_block: a.block.map(|(cols, widths)| ExactBlock {
+								cols: cols.iter().map(|w| (!w.is_nan()).then_some(*w)).collect(),
+								widths: widths.to_vec(),
+							}),
 							cost_ns: self.cost[i].ns(),
 							exact: a.exact,
 						})
@@ -761,10 +779,12 @@ mod tests {
 			dims: &[1],
 			plots: &[Plot::DEFAULT],
 			clock: None,
+			fidelity: Fidelity::Exact,
 			fires: 1,
 			vals: Some(vals),
 			dep_dims: &[],
 			jac: None,
+			exact_block: None,
 			exact: false,
 			formula: None,
 			deriv: None,

@@ -407,9 +407,10 @@ impl Hover {
 	}
 }
 
-/// One jac entry, resolved to measured pixel endpoints relative to the `.dag` origin. `mag` is
-/// `|w| / max|w|` over the destination node's jac — piecewise-constant nodes spike to ±1/h at
-/// threshold crossings, and this per-node normalization absorbs them.
+/// One dep element→out element sensitivity, resolved to measured pixel endpoints relative to the
+/// `.dag` origin. `mag` is `|w| / max|w|` over the destination node's own weights —
+/// piecewise-constant nodes spike to ±1/h at threshold crossings, and this per-node normalization
+/// absorbs them.
 #[derive(Clone, PartialEq)]
 struct Edge {
 	from: (String, usize),
@@ -418,6 +419,10 @@ struct Edge {
 	y1: f64,
 	x2: f64,
 	y2: f64,
+	/// How much this dep element moves that out element. Where the node answered the exact reading
+	/// this is its whole reach — the norm over every lag the body read, so an edge off a 60-bar
+	/// window is drawn as what the window does and not as what its newest bar does; where it did
+	/// not, it is the one-step column, which speaks for the newest element alone.
 	w: f64,
 	mag: f64,
 	/// Differentiated, or finite-differenced. What makes the two visibly different edges rather than
@@ -425,7 +430,38 @@ struct Edge {
 	exact: bool,
 }
 
-/// Resolves every non-zero jac entry of the frame to pixel endpoints: dep concat slot →
+/// One weight per `(out slot, dep slot)` taken over the dep's whole reach: the magnitude is the norm
+/// across the block's element-groups and the sign is that of the one reaching furthest into it, so
+/// an edge keeps the direction it drew in while its width comes to stand for the window.
+/// `None` — this node offered no exact block, and its one-step column is the whole reading.
+fn reach_weights(a: &Activation, lens: &[usize], out_len: usize) -> Option<Vec<Option<f64>>> {
+	let b = a.exact_block.as_ref()?;
+	assert_eq!(b.widths.len(), lens.len(), "one width per dep for {}", a.node);
+	assert_eq!(b.cols.len(), out_len * b.widths.iter().sum::<usize>(), "exact block shape mismatch for {}", a.node);
+	let mut out = Vec::with_capacity(out_len * lens.iter().sum::<usize>());
+	for i in 0..out_len {
+		let mut base = 0;
+		for (d, &len) in lens.iter().enumerate() {
+			let width = b.widths[d];
+			for slot in 0..len {
+				let (mut sq, mut peak, mut seen) = (0.0f64, 0.0f64, false);
+				for lag in 0..width / len {
+					let Some(w) = b.cols[base + i * width + lag * len + slot] else { continue };
+					seen = true;
+					sq += w * w;
+					if w.abs() > peak.abs() {
+						peak = w;
+					}
+				}
+				out.push(seen.then(|| sq.sqrt().copysign(peak)));
+			}
+			base += out_len * width;
+		}
+	}
+	Some(out)
+}
+
+/// Resolves every non-zero sensitivity of the frame to pixel endpoints: dep concat slot →
 /// (dep node, local element) via prefix sums over the deps' lens, both cells measured against
 /// the `.dag` origin so the overlay is scroll-invariant.
 fn measure_edges(acts: &[Activation], dep_lens: &AHashMap<String, usize>) -> Vec<Edge> {
@@ -443,13 +479,15 @@ fn measure_edges(acts: &[Activation], dep_lens: &AHashMap<String, usize>) -> Vec
 		let lens: Vec<usize> = a.deps.iter().map(|d| *dep_lens.get(d).expect("dep present in topology")).collect();
 		let total: usize = lens.iter().sum();
 		assert_eq!(jac.len(), out_len * total, "jac shape mismatch for {}", a.node);
-		let max_w = jac.iter().flatten().fold(0.0_f64, |m, w| m.max(w.abs()));
+		let reach = reach_weights(a, &lens, out_len);
+		let weights = reach.as_deref().unwrap_or(jac);
+		let max_w = weights.iter().flatten().fold(0.0_f64, |m, w| m.max(w.abs()));
 		if max_w == 0.0 {
 			continue;
 		}
 		for i in 0..out_len {
 			for j in 0..total {
-				let Some(w) = jac[i * total + j] else { continue };
+				let Some(w) = weights[i * total + j] else { continue };
 				if w == 0.0 {
 					continue;
 				}
