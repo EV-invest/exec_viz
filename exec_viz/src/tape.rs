@@ -11,7 +11,7 @@
 //! the cost statistics all happen on the tape thread, off the trading core.
 
 use std::{
-	collections::{HashMap, VecDeque},
+	collections::{HashSet, VecDeque},
 	fmt::Write as _,
 	sync::{
 		Arc, Mutex, MutexGuard,
@@ -415,7 +415,7 @@ impl Tape {
 			// names rather than the positional flags: on the wire `gates` is a subset of `deps`, which is
 			// what both readers test membership against.
 			let gates: Vec<String> = m.deps.iter().zip(m.gates).filter(|(_, g)| **g).map(|(d, _)| trim(d)).collect();
-			let deps: Vec<String> = m.deps.iter().map(|d| buffered(&trim(d), &self.topology)).collect();
+			let deps: Vec<String> = m.deps.iter().map(|d| trim(d)).collect();
 			let topo = TopoNode {
 				node: trim(m.node),
 				deps,
@@ -534,14 +534,9 @@ impl Tape {
 
 	pub(crate) fn day(&self) -> DayOut {
 		// A buffer's series is its source's, element for element — charting it would draw every
-		// buffered pane twice. Consumers' deps are rerouted onto the source, so the client's depth
-		// pass ranks a graph whose every name it can resolve.
-		let src_of: HashMap<&str, &str> = self
-			.series
-			.iter()
-			.filter(|s| s.node.starts_with("Buffer<"))
-			.map(|s| (s.node.as_str(), s.deps.first().expect("a buffer has one dep").as_str()))
-			.collect();
+		// buffered pane twice. Nothing names one in dep position (`Buffering<C, R>` forwards
+		// `Cell::NAME` to `C`'s), so dropping the pane leaves no dangling edge behind.
+		let buffers: HashSet<&str> = self.series.iter().map(|s| s.node.as_str()).filter(|n| n.starts_with("Buffer<")).collect();
 		// A typo in `price_node` would otherwise just quietly draw no candles; and the chart reads
 		// the node it names positionally, as o·h·l·c·v.
 		if let Some(p) = &self.price_node {
@@ -552,15 +547,7 @@ impl Tape {
 			}
 		}
 		DayOut {
-			series: self
-				.series
-				.iter()
-				.filter(|s| !src_of.contains_key(s.node.as_str()))
-				.map(|s| SeriesOut {
-					deps: s.deps.iter().map(|d| src_of.get(d.as_str()).map_or(d.as_str(), |s| *s).to_string()).collect(),
-					..s.clone()
-				})
-				.collect(),
+			series: self.series.iter().filter(|s| !buffers.contains(s.node.as_str())).cloned().collect(),
 			price_node: self.price_node.clone(),
 		}
 	}
@@ -715,24 +702,6 @@ impl From<&Plot> for PlotOut {
 			candles: p.candles,
 		}
 	}
-}
-
-/// `Buffering<X, J>` names a *shape*, not a frame node — the node the client must draw the edge to
-/// is the `Buffer<X, K>` that serves it. A buffer always precedes its consumers in step order, so
-/// `topology` already holds it. Non-`Buffering` deps pass through.
-fn buffered(dep: &str, topology: &[TopoNode]) -> String {
-	let Some(inner) = dep.strip_prefix("Buffering<").and_then(|s| s.strip_suffix('>')) else {
-		return dep.to_string();
-	};
-	// `J` is a `usize` literal, so the last comma is the top-level one.
-	let series = inner[..inner.rfind(',').expect("Buffering<C, J> has two arguments")].trim_end();
-	let prefix = format!("Buffer<{series},");
-	topology
-		.iter()
-		.map(|t| &t.node)
-		.find(|n| n.starts_with(&prefix))
-		.unwrap_or_else(|| panic!("{dep} has no `Buffer<{series}, _>` ahead of it in the graph"))
-		.clone()
 }
 
 /// Drops module paths at every depth, so a card reads as the types it names:

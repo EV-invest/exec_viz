@@ -40,9 +40,6 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 		})
 		.collect();
 
-	// a dep naming a buffer resolves to the *series* card, which is where the buffer is drawn
-	let src_of: AHashMap<&str, &str> = hist.iter().map(|(src, (buf, _))| (buf.as_str(), src.as_str())).collect();
-
 	// `level(node) = max(1 + level(deps), level(gates))`, roots 0, over the *drawn* graph: a hidden
 	// node must not consume a column, or its consumers sit one right of the card they visibly
 	// depend on. A gate is an upstream edge — a node reading nothing but gated on a deep one
@@ -52,7 +49,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	let mut level: AHashMap<String, usize> = AHashMap::new();
 	let mut cols: Vec<Vec<TopoNode>> = Vec::new();
 	for n in &topology {
-		let at = |x: &String| *level.get(src_of.get(x.as_str()).map_or(x.as_str(), |s| *s)).expect("topo order: dep precedes node");
+		let at = |x: &String| *level.get(x.as_str()).expect("topo order: dep precedes node");
 		let l = n
 			.deps
 			.iter()
@@ -72,7 +69,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	}
 
 	// `v` acts on what the pointer is over, and a buffer glyph has nothing drawn of its own — it
-	// resolves to the series it retains. Owned copies because `src_of` borrows `hist`.
+	// resolves to the series it retains.
 	let buf_src: AHashMap<String, String> = hist.iter().map(|(src, (buf, _))| (buf.clone(), src.clone())).collect();
 	let defaults: AHashMap<String, bool> = topology.iter().map(|n| (n.node.clone(), !n.plots.is_empty())).collect();
 	use_effect(move || {
@@ -181,11 +178,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 			(n.node.clone(), named)
 		})
 		.collect();
-	let hovered_deps: Vec<String> = hover()
-		.node()
-		.and_then(|h| topology.iter().find(|n| n.node == h))
-		.map(|n| n.deps.iter().map(|d| src_of.get(d.as_str()).map_or(d.clone(), |s| (*s).to_string())).collect())
-		.unwrap_or_default();
+	let hovered_deps: Vec<String> = hover().node().and_then(|h| topology.iter().find(|n| n.node == h)).map(|n| n.deps.clone()).unwrap_or_default();
 	let hovered_node: Option<String> = hover().node().map(str::to_string);
 
 	rsx! {
