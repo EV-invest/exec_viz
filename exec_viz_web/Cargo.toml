@@ -9,8 +9,15 @@ repository.workspace = true
 # A bundle, not a crate: `dx build` is what makes it, and there is nothing to `cargo add`.
 publish = false
 
-# wasm-only bin. `exec_viz` is pulled in with default features off — that leaves just `api_types`,
-# so none of the axum/tokio server half is dragged onto the wasm target.
+# `test = false` because the bin is wasm-only: a workspace `cargo test` otherwise compiles it for the
+# host, against a `v_utils::lwc` that exists on wasm32 alone.
+[[bin]]
+name = "exec_viz_web"
+path = "src/main.rs"
+test = false
+
+# `exec_viz` is pulled in with default features off — that leaves just `api_types`, so none of the
+# axum/tokio server half is dragged onto the wasm target.
 [dependencies]
 ahash.workspace = true
 dioxus.workspace = true
