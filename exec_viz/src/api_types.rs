@@ -111,12 +111,17 @@ pub struct DayOut {
 /// the flattened elements — a slot is `None` where the node left it empty. `jac` is the tick's own
 /// row-major `vals.len() × sum(dep lens)` local Jacobian — never carried forward — with entries
 /// `None` where the engine saw no signal (NaN doesn't survive serde_json).
+///
+/// `ran` is the other half of `fired`, and the engine's own answer rather than a re-derivation: a
+/// clocked node between publications did not fire and *was* stepped; one the sweep skipped did
+/// neither.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Activation {
 	pub node: String,
 	pub deps: Vec<String>,
 	pub gates: Vec<String>,
 	pub out: String,
+	pub ran: bool,
 	pub fired: bool,
 	pub dims: Vec<usize>,
 	pub vals: Option<Vec<Option<f64>>>,

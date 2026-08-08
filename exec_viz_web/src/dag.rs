@@ -4,8 +4,6 @@
 //! by the tick's finite-difference Jacobian — values and sensitivities on the computation graph
 //! itself, à la Jane Street's "Computations that differentiate, debug and document themselves".
 
-use std::collections::BTreeSet;
-
 use ahash::{AHashMap, AHashSet};
 use dioxus::prelude::*;
 use exec_viz::api_types::{Activation, FidelityOut, TopoNode};
@@ -114,42 +112,14 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	// what sits behind it either.
 	let gate_open = |g: &str| acts.get(g).and_then(|(_, _, v)| v.as_ref()).is_some_and(|v| v[0].is_some_and(|x| x != 0.0));
 
-	// `fired` already says a node did not run, but not *why*: a clocked node between publications
-	// reads the same as one the sweep is skipping, so unlit alone strobes rather than informs. What
-	// separates them is the gates, and a gate suppresses what *feeds* it as much as what reads it —
-	// a node whose every consumer sits behind the same gate is read by nobody while that gate is
-	// false, so the sweep skips it too. `trading_data_macros::demand` takes that closure at compile
-	// time; this is the same intersection retaken in reverse step order against the gates' current
-	// readings. A gate and a buffer are pinned there — held state cannot re-warm through a skip — so
-	// neither goes dark nor carries suppression on to what feeds it.
-	// Intersected with `!fired` at the end, which is what keeps the two pins the wire does *not* name
-	// (folds, latches) from reading dark: the graph keeps those warm, and a node that ran said so.
-	let mut consumers: AHashMap<&str, Vec<&str>> = AHashMap::new();
-	for n in &topology {
-		for d in &n.deps {
-			consumers.entry(d.as_str()).or_default().push(n.node.as_str());
-		}
-	}
-	let pinned = |n: &str| gate_set.contains(n) || n.starts_with("Buffer<");
-	let mut suppressors: AHashMap<&str, BTreeSet<&str>> = AHashMap::new();
-	for n in topology.iter().rev() {
-		let mut s = BTreeSet::new();
-		if !pinned(&n.node) {
-			let mut demand: Option<BTreeSet<&str>> = None;
-			for c in consumers.get(n.node.as_str()).into_iter().flatten() {
-				let term = suppressors.get(c).expect("reverse step order: a consumer is resolved before what it reads");
-				demand = Some(demand.map_or_else(|| term.clone(), |d: BTreeSet<&str>| d.intersection(term).copied().collect()));
-			}
-			// an output answers to nobody, so nothing but its own gates can make it dormant
-			s = demand.unwrap_or_default();
-			s.extend(n.gates.iter().map(String::as_str));
-		}
-		suppressors.insert(&n.node, s);
-	}
-	let dormant: AHashSet<&str> = suppressors
+	// The sweep's own answer, not a re-derivation of it: a node reports whether it was stepped, so
+	// the fold and latch pins a re-derivation could not see are already in it. A node absent from the
+	// frame has not reported at all and is drawn as it is drawn before the first tick — unlit, not dark.
+	let dormant: AHashSet<&str> = frame
 		.iter()
-		.filter(|(n, s)| s.iter().any(|g| !gate_open(g)) && !acts.get(**n).is_some_and(|(fired, _, _)| *fired))
-		.map(|(n, _)| *n)
+		.flat_map(|f| f.activations.iter())
+		.filter(|a| !a.ran)
+		.map(|a| a.node.as_str())
 		.collect();
 	// `plots[].labels` is one name list per axis; their row-major cross product, indexed through
 	// `plots[].slots` (empty `slots` claims all of them), is the flat per-slot name the hover tips

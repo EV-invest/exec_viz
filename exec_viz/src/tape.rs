@@ -239,6 +239,7 @@ impl Observer for Rec<'_> {
 			r.acts.widths.extend_from_slice(widths);
 		}
 		r.acts.exact.push(fire.exact);
+		r.acts.ran.push(fire.ran);
 		r.acts.close();
 
 		if r.timed {
@@ -317,6 +318,9 @@ struct Acts {
 	/// How this tick's Jacobian was reached, positional with `ends`. Per tick rather than per node
 	/// because a node that did not fire drew nothing at all.
 	exact: Vec<bool>,
+	/// Whether the sweep advanced each node, positional with `ends`. Not derivable from the columns:
+	/// a clocked node between publications grows none of them and was stepped all the same.
+	ran: Vec<bool>,
 	/// Positional with `topology`.
 	ends: Vec<Ends>,
 }
@@ -327,6 +331,7 @@ impl Acts {
 		let span = |a: u32, b: u32| (b > a).then_some(a as usize..b as usize);
 		Some(ActRef {
 			out: &self.outs[start.out as usize..end.out as usize],
+			ran: self.ran[i],
 			vals: span(start.vals, end.vals).map(|r| &self.vals[r]),
 			jac: span(start.jac, end.jac).map(|r| &self.jac[r]),
 			block: span(start.block, end.block).map(|r| (&self.block[r], &self.widths[start.widths as usize..end.widths as usize])),
@@ -353,6 +358,8 @@ impl Acts {
 		self.jac.clear();
 		self.block.clear();
 		self.widths.clear();
+		self.exact.clear();
+		self.ran.clear();
 		self.ends.clear();
 	}
 }
@@ -371,6 +378,7 @@ struct Ends {
 #[derive(Clone, Copy)]
 struct ActRef<'a> {
 	out: &'a str,
+	ran: bool,
 	vals: Option<&'a [f64]>,
 	jac: Option<&'a [f64]>,
 	block: Option<(&'a [f64], &'a [usize])>,
@@ -574,6 +582,7 @@ impl Tape {
 							deps: n.deps.clone(),
 							gates: n.gates.clone(),
 							out: held.out.to_string(),
+							ran: a.ran,
 							fired: a.vals.is_some(),
 							dims: n.dims.clone(),
 							vals: held.vals.map(|v| v.iter().map(|x| x.is_finite().then_some(*x)).collect()),
@@ -749,6 +758,7 @@ mod tests {
 			plots: &[Plot::DEFAULT],
 			clock: None,
 			fidelity: Fidelity::Exact,
+			ran: true,
 			fires: 1,
 			vals: Some(vals),
 			dep_dims: &[],
