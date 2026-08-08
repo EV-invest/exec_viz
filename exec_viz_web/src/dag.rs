@@ -115,12 +115,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	// The sweep's own answer, not a re-derivation of it: a node reports whether it was stepped, so
 	// the fold and latch pins a re-derivation could not see are already in it. A node absent from the
 	// frame has not reported at all and is drawn as it is drawn before the first tick — unlit, not dark.
-	let dormant: AHashSet<&str> = frame
-		.iter()
-		.flat_map(|f| f.activations.iter())
-		.filter(|a| !a.ran)
-		.map(|a| a.node.as_str())
-		.collect();
+	let dormant: AHashSet<&str> = frame.iter().flat_map(|f| f.activations.iter()).filter(|a| !a.ran).map(|a| a.node.as_str()).collect();
 	// `plots[].labels` is one name list per axis; their row-major cross product, indexed through
 	// `plots[].slots` (empty `slots` claims all of them), is the flat per-slot name the hover tips
 	// read a node's values out under. The axis lengths multiply out to the slot count — the dag

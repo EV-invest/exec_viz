@@ -34,18 +34,25 @@ can be taken against yours.
 fires over the run:  Book=318420  Screen=3185  Bar:1m=2895  Bar:5m=579  Bar:1h=49
 
 footprint — Viz::bytes over the retained ticks
-     2048 │▬ 3.0 MB  (1477 B/tick)
-     8192 │▬▬ 5.4 MB  (818 B/tick)
-    20000 │▬▬▬▬ 11.3 MB  (665 B/tick)
-    65536 │▬▬▬▬▬▬▬▬▬▬▬ 33.8 MB  (554 B/tick)
-   262144 │▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ 132.6 MB  (524 B/tick)
+     2048 │▬ 1.4 MB  (679 B/tick)
+     8192 │▬ 4.2 MB  (639 B/tick)
+    20000 │▬▬▬ 10.0 MB  (592 B/tick)
+    65536 │▬▬▬▬▬▬▬▬▬▬▬ 34.0 MB  (557 B/tick)
+   262144 │▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ 138.2 MB  (546 B/tick)
 
-reactivity — /api/seek mid-tape *above* a bare 53µs loopback hop, median of 64
-     2048 │▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ 13µs
-     8192 │▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ 13µs
-    20000 │▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ 13µs
-    65536 │▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ 14µs
-   262144 │▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ 34µs
+reactivity — /api/seek mid-tape *above* a bare 55µs loopback hop, median of 64
+     2048 │▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ 11µs
+     8192 │▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ 12µs
+    20000 │▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ 13µs
+    65536 │▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ 13µs
+   262144 │▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ 31µs
+
+absorption — the whole recording's wall clock per tick, tape-thread bound under `Block`
+     2048 │▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ 567ns
+     8192 │▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ 706ns
+    20000 │▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ 956ns
+    65536 │▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ 1085ns
+   262144 │▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ 1334ns
 
 addressability — fires still reachable by `step_until`, against the run's own
   capacity  retained          Book        Screen        Bar:1m        Bar:5m        Bar:1h
