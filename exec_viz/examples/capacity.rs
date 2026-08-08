@@ -36,7 +36,13 @@ const BAR: usize = 44;
 const MIN: usize = TICKS_PER_DAY / 1440;
 /// The book node carries the whole per-tick face budget on its own: spl spreads it over four that
 /// all fire on nearly every tick, and what the tape holds is the sum either way.
-const NODES: [Node; 5] = [
+///
+/// `Cap` is here because a mix without it measures the wrong thing. A frame carries every node's
+/// standing value, and a node that has been quiet is found by searching back for its last fire — so
+/// the cost of landing a cursor is set by the *rarest* node, not the busiest. spl's market cap fires
+/// twice a day and its classification can go a whole one without firing; a mix whose rarest node
+/// still fires hourly reports a latency nobody has.
+const NODES: [Node; 6] = [
 	Node {
 		name: "Book",
 		period: 1,
@@ -66,6 +72,12 @@ const NODES: [Node; 5] = [
 		period: 60 * MIN,
 		face: 24,
 		dims: &[5],
+	},
+	Node {
+		name: "Cap",
+		period: TICKS_PER_DAY / 2,
+		face: 24,
+		dims: &[1],
 	},
 ];
 const CARD: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -272,11 +284,11 @@ fn render(rows: &[Row], fires: &[usize], ticks: usize, hop_us: f64) -> String {
 	chart(format_args!("footprint — Viz::bytes over the retained ticks\n"), &|r| r.bytes as f64 / 1e6, &|r, v| {
 		format!("{v:.1} MB  ({} B/tick)", r.bytes / r.retained)
 	});
-	// Above the hop, not including it: a loopback round trip is the larger half of every reading here
-	// and none of it is the tape's, so charting the raw number draws five bars of the same length.
+	// What one keypress costs, socket included. An earlier version charted this minus the loopback hop,
+	// which drew a prettier curve and told the reader a number they never wait for.
 	chart(
-		format_args!("reactivity — /api/seek mid-tape *above* a bare {hop_us:.0}µs loopback hop, median of {SAMPLES}\n"),
-		&|r| (r.seek_us - hop_us).max(0.0),
+		format_args!("reactivity — one /api/seek mid-tape, median of {SAMPLES}; the bare loopback hop under it is {hop_us:.0}µs\n"),
+		&|r| r.seek_us,
 		&|_, v| format!("{v:.0}µs"),
 	);
 

@@ -99,6 +99,7 @@ impl Tape {
 				opened: 0,
 				fires: Vec::new(),
 				keep: Vec::new(),
+				fired: Vec::new(),
 				sealed: false,
 				dropped: dropped.clone(),
 				series: Vec::new(),
@@ -246,6 +247,7 @@ impl Viz {
 			));
 		}
 		let file: TapeFile = rmp_serde::decode::from_read(&mut r).map_err(std::io::Error::other)?;
+		let ticks: VecDeque<Tick> = file.ticks.into();
 
 		Ok(Self {
 			inner: Arc::new(Mutex::new(Inner {
@@ -254,10 +256,11 @@ impl Viz {
 				bucket_ms: file.bucket_ms,
 				topology: file.topology,
 				cost: file.cost,
-				ticks: file.ticks.into(),
 				opened: file.opened,
 				fires: file.fires,
 				keep: file.keep,
+				fired: index(&ticks),
+				ticks,
 				sealed: true,
 				dropped: Arc::new(AtomicUsize::new(file.dropped)),
 				series: file.series,
@@ -597,6 +600,14 @@ pub(crate) struct Inner {
 	/// Per-node "keep one fire in `2^keep[i]`", positional with `topology` and only ever raised —
 	/// see [`Inner::thin`].
 	keep: Vec<u8>,
+	/// Per node, ascending, the `ticks` *positions* it fired on — what [`Inner::held`] binary-searches
+	/// instead of scanning. Positions and not `abs` ids because between thinning passes `ticks` only
+	/// grows at the back, so a position already recorded cannot move; [`Inner::thin`], which is the
+	/// one thing that does move them, rebuilds this in the walk it was already making.
+	///
+	/// Derived, so it is not in [`TapeFile`] — [`Viz::load`] rebuilds it rather than trusting a file
+	/// to agree with the ticks beside it.
+	fired: Vec<Vec<usize>>,
 	/// The recording is over — see [`Inner::head`].
 	sealed: bool,
 	/// The recorder's drop tally, shared — see [`Recorder::dropped`].
@@ -672,6 +683,15 @@ impl Inner {
 		debug_assert!(self.ticks.len() < self.capacity);
 		let abs = self.opened;
 		self.opened += 1;
+		let p = self.ticks.len();
+		// After the push, so `p` is the position the tick lands on. Appending only ever extends each
+		// node's list at the back, which is what keeps them ascending without a sort.
+		self.fired.resize(ranks.len(), Vec::new());
+		for (i, r) in ranks.iter().enumerate() {
+			if *r > 0 {
+				self.fired[i].push(p);
+			}
+		}
 		self.ticks.push_back(Tick { abs, ts_ns, acts, ranks });
 		freed
 	}
@@ -728,6 +748,7 @@ impl Inner {
 				false => freed.push(t.acts),
 			}
 		}
+		self.fired = index(kept.iter());
 		self.ticks = kept;
 		freed
 	}
@@ -835,10 +856,15 @@ impl Inner {
 	/// Node `i`'s newest act at or before position `p` that fired; `None` if it never has. Searched
 	/// rather than stamped, so what a scrubbed frame carries forward is a value the tape can still
 	/// show — a remembered tick number would outlive the tick a thinning pass dropped.
-	/// ponytail: linear scan, bounded by `capacity`; index the fires per node if a frame ever costs
-	/// enough to feel.
+	///
+	/// Searched over [`Inner::fired`] rather than back over the ticks: a frame calls this once per
+	/// quiet node, and a node that has not fired for a long stretch — a twice-a-day market cap, a
+	/// classification that never triggers — walked the whole retained tape for it. That put a scrub
+	/// at 139ms on a 42-node graph holding a day, growing linearly with where the cursor sat.
 	fn held(&self, i: usize, p: usize) -> Option<ActRef<'_>> {
-		self.ticks.iter().take(p + 1).rev().find_map(|t| t.acts.get(i).filter(|a| a.vals.is_some()))
+		let fired = self.fired.get(i)?;
+		let q = fired[..fired.partition_point(|&q| q <= p)].last()?;
+		self.ticks[*q].acts.get(i).filter(|a| a.vals.is_some())
 	}
 
 	/// `n` retained ticks on, not `n` absolute ones: in a thinned stretch the ticks between two
@@ -953,6 +979,21 @@ impl From<&Plot> for PlotOut {
 			candles: p.candles,
 		}
 	}
+}
+
+/// Per node, the positions in `ticks` it fired on — [`Inner::fired`] built from scratch, which is
+/// what both the thinning pass and a tape read back off disk need. Ascending because the ticks are.
+fn index<'a>(ticks: impl IntoIterator<Item = &'a Tick>) -> Vec<Vec<usize>> {
+	let mut fired: Vec<Vec<usize>> = Vec::new();
+	for (p, t) in ticks.into_iter().enumerate() {
+		fired.resize(fired.len().max(t.ranks.len()), Vec::new());
+		for (i, r) in t.ranks.iter().enumerate() {
+			if *r > 0 {
+				fired[i].push(p);
+			}
+		}
+	}
+	fired
 }
 
 /// Drops module paths at every depth, so a card reads as the types it names:
