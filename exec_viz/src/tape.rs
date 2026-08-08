@@ -11,7 +11,7 @@
 //! the cost statistics all happen on the tape thread, off the trading core.
 
 use std::{
-	collections::{HashMap, VecDeque},
+	collections::{HashSet, VecDeque},
 	fmt::Write as _,
 	sync::{
 		Arc, Mutex, MutexGuard,
@@ -25,7 +25,7 @@ use std::{
 use trading_data_dag::{Fidelity, Fire, Ink, Observer, Plot, Want};
 
 use crate::{
-	api_types::{Activation, ActivationFrame, DayOut, FidelityOut, GuideOut, InkOut, PlotOut, PointOut, SeriesOut, TopoNode},
+	api_types::{Activation, ActivationFrame, DayOut, ExactBlock, FidelityOut, GuideOut, InkOut, PlotOut, PointOut, SeriesOut, TopoNode},
 	cost::{Clock, Cost, TICK_STRIDE},
 };
 
@@ -193,7 +193,7 @@ impl Observer for Rec<'_> {
 	/// is still in the whole-kept tail, and the strides [`Tape::thin`] will grow through depend on how
 	/// much longer the run goes. Guessing costs fidelity on a tick a client can still seek to.
 	fn want(&self, _: &'static str) -> Want {
-		Want::Jac
+		Want::Exact
 	}
 
 	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [bool], fire: Fire<'_>) {
@@ -234,7 +234,12 @@ impl Observer for Rec<'_> {
 		if let Some(jac) = fire.jac {
 			r.acts.jac.extend_from_slice(jac);
 		}
+		if let Some((block, widths)) = fire.exact_block {
+			r.acts.block.extend_from_slice(block);
+			r.acts.widths.extend_from_slice(widths);
+		}
 		r.acts.exact.push(fire.exact);
+		r.acts.ran.push(fire.ran);
 		r.acts.close();
 
 		if r.timed {
@@ -308,21 +313,28 @@ struct Acts {
 	outs: String,
 	vals: Vec<f64>,
 	jac: Vec<f64>,
+	block: Vec<f64>,
+	widths: Vec<usize>,
 	/// How this tick's Jacobian was reached, positional with `ends`. Per tick rather than per node
 	/// because a node that did not fire drew nothing at all.
 	exact: Vec<bool>,
+	/// Whether the sweep advanced each node, positional with `ends`. Not derivable from the columns:
+	/// a clocked node between publications grows none of them and was stepped all the same.
+	ran: Vec<bool>,
 	/// Positional with `topology`.
 	ends: Vec<Ends>,
 }
 impl Acts {
 	fn get(&self, i: usize) -> Option<ActRef<'_>> {
 		let end = *self.ends.get(i)?;
-		let start = if i == 0 { Ends { out: 0, vals: 0, jac: 0 } } else { self.ends[i - 1] };
+		let start = if i == 0 { Ends::default() } else { self.ends[i - 1] };
 		let span = |a: u32, b: u32| (b > a).then_some(a as usize..b as usize);
 		Some(ActRef {
 			out: &self.outs[start.out as usize..end.out as usize],
+			ran: self.ran[i],
 			vals: span(start.vals, end.vals).map(|r| &self.vals[r]),
 			jac: span(start.jac, end.jac).map(|r| &self.jac[r]),
+			block: span(start.block, end.block).map(|r| (&self.block[r], &self.widths[start.widths as usize..end.widths as usize])),
 			exact: self.exact[i],
 		})
 	}
@@ -335,6 +347,8 @@ impl Acts {
 			out: end(self.outs.len()),
 			vals: end(self.vals.len()),
 			jac: end(self.jac.len()),
+			block: end(self.block.len()),
+			widths: end(self.widths.len()),
 		});
 	}
 
@@ -342,15 +356,21 @@ impl Acts {
 		self.outs.clear();
 		self.vals.clear();
 		self.jac.clear();
+		self.block.clear();
+		self.widths.clear();
+		self.exact.clear();
+		self.ran.clear();
 		self.ends.clear();
 	}
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct Ends {
 	out: u32,
 	vals: u32,
 	jac: u32,
+	block: u32,
+	widths: u32,
 }
 
 /// One node's slice of a tick. `vals: None` is the unfired reading — a fired node's columns always
@@ -358,8 +378,10 @@ struct Ends {
 #[derive(Clone, Copy)]
 struct ActRef<'a> {
 	out: &'a str,
+	ran: bool,
 	vals: Option<&'a [f64]>,
 	jac: Option<&'a [f64]>,
+	block: Option<(&'a [f64], &'a [usize])>,
 	exact: bool,
 }
 
@@ -401,7 +423,7 @@ impl Tape {
 			// names rather than the positional flags: on the wire `gates` is a subset of `deps`, which is
 			// what both readers test membership against.
 			let gates: Vec<String> = m.deps.iter().zip(m.gates).filter(|(_, g)| **g).map(|(d, _)| trim(d)).collect();
-			let deps: Vec<String> = m.deps.iter().map(|d| buffered(&trim(d), &self.topology)).collect();
+			let deps: Vec<String> = m.deps.iter().map(|d| trim(d)).collect();
 			let topo = TopoNode {
 				node: trim(m.node),
 				deps,
@@ -520,14 +542,9 @@ impl Tape {
 
 	pub(crate) fn day(&self) -> DayOut {
 		// A buffer's series is its source's, element for element — charting it would draw every
-		// buffered pane twice. Consumers' deps are rerouted onto the source, so the client's depth
-		// pass ranks a graph whose every name it can resolve.
-		let src_of: HashMap<&str, &str> = self
-			.series
-			.iter()
-			.filter(|s| s.node.starts_with("Buffer<"))
-			.map(|s| (s.node.as_str(), s.deps.first().expect("a buffer has one dep").as_str()))
-			.collect();
+		// buffered pane twice. Nothing names one in dep position (`Buffering<C, R>` forwards
+		// `Cell::NAME` to `C`'s), so dropping the pane leaves no dangling edge behind.
+		let buffers: HashSet<&str> = self.series.iter().map(|s| s.node.as_str()).filter(|n| n.starts_with("Buffer<")).collect();
 		// A typo in `price_node` would otherwise just quietly draw no candles; and the chart reads
 		// the node it names positionally, as o·h·l·c·v.
 		if let Some(p) = &self.price_node {
@@ -538,15 +555,7 @@ impl Tape {
 			}
 		}
 		DayOut {
-			series: self
-				.series
-				.iter()
-				.filter(|s| !src_of.contains_key(s.node.as_str()))
-				.map(|s| SeriesOut {
-					deps: s.deps.iter().map(|d| src_of.get(d.as_str()).map_or(d.as_str(), |s| *s).to_string()).collect(),
-					..s.clone()
-				})
-				.collect(),
+			series: self.series.iter().filter(|s| !buffers.contains(s.node.as_str())).cloned().collect(),
 			price_node: self.price_node.clone(),
 		}
 	}
@@ -573,10 +582,15 @@ impl Tape {
 							deps: n.deps.clone(),
 							gates: n.gates.clone(),
 							out: held.out.to_string(),
+							ran: a.ran,
 							fired: a.vals.is_some(),
 							dims: n.dims.clone(),
 							vals: held.vals.map(|v| v.iter().map(|x| x.is_finite().then_some(*x)).collect()),
 							jac: a.jac.map(|j| j.iter().map(|w| (!w.is_nan()).then_some(*w)).collect()),
+							exact_block: a.block.map(|(cols, widths)| ExactBlock {
+								cols: cols.iter().map(|w| (!w.is_nan()).then_some(*w)).collect(),
+								widths: widths.to_vec(),
+							}),
 							cost_ns: self.cost[i].ns(),
 							exact: a.exact,
 						})
@@ -699,24 +713,6 @@ impl From<&Plot> for PlotOut {
 	}
 }
 
-/// `Buffering<X, J>` names a *shape*, not a frame node — the node the client must draw the edge to
-/// is the `Buffer<X, K>` that serves it. A buffer always precedes its consumers in step order, so
-/// `topology` already holds it. Non-`Buffering` deps pass through.
-fn buffered(dep: &str, topology: &[TopoNode]) -> String {
-	let Some(inner) = dep.strip_prefix("Buffering<").and_then(|s| s.strip_suffix('>')) else {
-		return dep.to_string();
-	};
-	// `J` is a `usize` literal, so the last comma is the top-level one.
-	let series = inner[..inner.rfind(',').expect("Buffering<C, J> has two arguments")].trim_end();
-	let prefix = format!("Buffer<{series},");
-	topology
-		.iter()
-		.map(|t| &t.node)
-		.find(|n| n.starts_with(&prefix))
-		.unwrap_or_else(|| panic!("{dep} has no `Buffer<{series}, _>` ahead of it in the graph"))
-		.clone()
-}
-
 /// Drops module paths at every depth, so a card reads as the types it names:
 /// `Buffer<spl::nodes::Bar1m, dag::Horizon::Span(v_utils::primitives::timeframe::Timeframe(180000))>`
 /// → `Buffer<Bar1m, Horizon::Span(Timeframe(180000))>`. A segment is a module iff it starts
@@ -761,10 +757,13 @@ mod tests {
 			dims: &[1],
 			plots: &[Plot::DEFAULT],
 			clock: None,
+			fidelity: Fidelity::Exact,
+			ran: true,
 			fires: 1,
 			vals: Some(vals),
 			dep_dims: &[],
 			jac: None,
+			exact_block: None,
 			exact: false,
 			formula: None,
 			deriv: None,

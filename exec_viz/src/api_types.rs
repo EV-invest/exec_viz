@@ -111,21 +111,40 @@ pub struct DayOut {
 /// the flattened elements — a slot is `None` where the node left it empty. `jac` is the tick's own
 /// row-major `vals.len() × sum(dep lens)` local Jacobian — never carried forward — with entries
 /// `None` where the engine saw no signal (NaN doesn't survive serde_json).
+///
+/// `ran` is the other half of `fired`, and the engine's own answer rather than a re-derivation: a
+/// clocked node between publications did not fire and *was* stepped; one the sweep skipped did
+/// neither.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Activation {
 	pub node: String,
 	pub deps: Vec<String>,
 	pub gates: Vec<String>,
 	pub out: String,
+	pub ran: bool,
 	pub fired: bool,
 	pub dims: Vec<usize>,
 	pub vals: Option<Vec<Option<f64>>>,
 	pub jac: Option<Vec<Option<f64>>>,
+	/// The reading [`jac`](Self::jac) is silent about, where the kernel has one. `None` where it has
+	/// none, and then the column is the whole of what can be said.
+	pub exact_block: Option<ExactBlock>,
 	/// As [`TopoNode::cost_ns`] — carried here too so a card can show it without a second fetch.
 	pub cost_ns: Option<f64>,
 	/// Whether [`jac`](Self::jac) was differentiated or finite-differenced. Not a claim about how
 	/// much of the dep's reach the column covers — that is [`TopoNode::fidelity`].
 	pub exact: bool,
+}
+
+/// A tick's derivative over every element a body reached back over, not just the newest: per dep in
+/// `deps` order, `vals.len() × widths[d]` row-major and appended, oldest lag first — so a dep's last
+/// element-group is exactly its [`Activation::jac`] column. `None` entries for the same reason
+/// `jac`'s are: NaN does not survive serde_json.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ExactBlock {
+	pub cols: Vec<Option<f64>>,
+	/// `lags(d) * slots(d)`, positional with `deps`; prefix sums recover `(dep, lag, slot)`.
+	pub widths: Vec<usize>,
 }
 
 /// Replay position + the last tick's activations. `tick` counts consumed events (0 = nothing

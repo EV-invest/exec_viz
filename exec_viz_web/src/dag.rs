@@ -4,8 +4,6 @@
 //! by the tick's finite-difference Jacobian — values and sensitivities on the computation graph
 //! itself, à la Jane Street's "Computations that differentiate, debug and document themselves".
 
-use std::collections::BTreeSet;
-
 use ahash::{AHashMap, AHashSet};
 use dioxus::prelude::*;
 use exec_viz::api_types::{Activation, FidelityOut, TopoNode};
@@ -40,9 +38,6 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 		})
 		.collect();
 
-	// a dep naming a buffer resolves to the *series* card, which is where the buffer is drawn
-	let src_of: AHashMap<&str, &str> = hist.iter().map(|(src, (buf, _))| (buf.as_str(), src.as_str())).collect();
-
 	// `level(node) = max(1 + level(deps), level(gates))`, roots 0, over the *drawn* graph: a hidden
 	// node must not consume a column, or its consumers sit one right of the card they visibly
 	// depend on. A gate is an upstream edge — a node reading nothing but gated on a deep one
@@ -52,7 +47,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	let mut level: AHashMap<String, usize> = AHashMap::new();
 	let mut cols: Vec<Vec<TopoNode>> = Vec::new();
 	for n in &topology {
-		let at = |x: &String| *level.get(src_of.get(x.as_str()).map_or(x.as_str(), |s| *s)).expect("topo order: dep precedes node");
+		let at = |x: &String| *level.get(x.as_str()).expect("topo order: dep precedes node");
 		let l = n
 			.deps
 			.iter()
@@ -72,7 +67,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	}
 
 	// `v` acts on what the pointer is over, and a buffer glyph has nothing drawn of its own — it
-	// resolves to the series it retains. Owned copies because `src_of` borrows `hist`.
+	// resolves to the series it retains.
 	let buf_src: AHashMap<String, String> = hist.iter().map(|(src, (buf, _))| (buf.clone(), src.clone())).collect();
 	let defaults: AHashMap<String, bool> = topology.iter().map(|n| (n.node.clone(), !n.plots.is_empty())).collect();
 	use_effect(move || {
@@ -117,42 +112,14 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 	// what sits behind it either.
 	let gate_open = |g: &str| acts.get(g).and_then(|(_, _, v)| v.as_ref()).is_some_and(|v| v[0].is_some_and(|x| x != 0.0));
 
-	// `fired` already says a node did not run, but not *why*: a clocked node between publications
-	// reads the same as one the sweep is skipping, so unlit alone strobes rather than informs. What
-	// separates them is the gates, and a gate suppresses what *feeds* it as much as what reads it —
-	// a node whose every consumer sits behind the same gate is read by nobody while that gate is
-	// false, so the sweep skips it too. `trading_data_macros::demand` takes that closure at compile
-	// time; this is the same intersection retaken in reverse step order against the gates' current
-	// readings. A gate and a buffer are pinned there — held state cannot re-warm through a skip — so
-	// neither goes dark nor carries suppression on to what feeds it.
-	// Intersected with `!fired` at the end, which is what keeps the two pins the wire does *not* name
-	// (folds, latches) from reading dark: the graph keeps those warm, and a node that ran said so.
-	let mut consumers: AHashMap<&str, Vec<&str>> = AHashMap::new();
-	for n in &topology {
-		for d in &n.deps {
-			consumers.entry(d.as_str()).or_default().push(n.node.as_str());
-		}
-	}
-	let pinned = |n: &str| gate_set.contains(n) || n.starts_with("Buffer<");
-	let mut suppressors: AHashMap<&str, BTreeSet<&str>> = AHashMap::new();
-	for n in topology.iter().rev() {
-		let mut s = BTreeSet::new();
-		if !pinned(&n.node) {
-			let mut demand: Option<BTreeSet<&str>> = None;
-			for c in consumers.get(n.node.as_str()).into_iter().flatten() {
-				let term = suppressors.get(c).expect("reverse step order: a consumer is resolved before what it reads");
-				demand = Some(demand.map_or_else(|| term.clone(), |d: BTreeSet<&str>| d.intersection(term).copied().collect()));
-			}
-			// an output answers to nobody, so nothing but its own gates can make it dormant
-			s = demand.unwrap_or_default();
-			s.extend(n.gates.iter().map(String::as_str));
-		}
-		suppressors.insert(&n.node, s);
-	}
-	let dormant: AHashSet<&str> = suppressors
+	// The sweep's own answer, not a re-derivation of it: a node reports whether it was stepped, so
+	// the fold and latch pins a re-derivation could not see are already in it. A node absent from the
+	// frame has not reported at all and is drawn as it is drawn before the first tick — unlit, not dark.
+	let dormant: AHashSet<&str> = frame
 		.iter()
-		.filter(|(n, s)| s.iter().any(|g| !gate_open(g)) && !acts.get(**n).is_some_and(|(fired, _, _)| *fired))
-		.map(|(n, _)| *n)
+		.flat_map(|f| f.activations.iter())
+		.filter(|a| !a.ran)
+		.map(|a| a.node.as_str())
 		.collect();
 	// `plots[].labels` is one name list per axis; their row-major cross product, indexed through
 	// `plots[].slots` (empty `slots` claims all of them), is the flat per-slot name the hover tips
@@ -181,11 +148,7 @@ pub fn DagPanel(topology: Vec<TopoNode>) -> Element {
 			(n.node.clone(), named)
 		})
 		.collect();
-	let hovered_deps: Vec<String> = hover()
-		.node()
-		.and_then(|h| topology.iter().find(|n| n.node == h))
-		.map(|n| n.deps.iter().map(|d| src_of.get(d.as_str()).map_or(d.clone(), |s| (*s).to_string())).collect())
-		.unwrap_or_default();
+	let hovered_deps: Vec<String> = hover().node().and_then(|h| topology.iter().find(|n| n.node == h)).map(|n| n.deps.clone()).unwrap_or_default();
 	let hovered_node: Option<String> = hover().node().map(str::to_string);
 
 	rsx! {
@@ -407,9 +370,10 @@ impl Hover {
 	}
 }
 
-/// One jac entry, resolved to measured pixel endpoints relative to the `.dag` origin. `mag` is
-/// `|w| / max|w|` over the destination node's jac — piecewise-constant nodes spike to ±1/h at
-/// threshold crossings, and this per-node normalization absorbs them.
+/// One dep element→out element sensitivity, resolved to measured pixel endpoints relative to the
+/// `.dag` origin. `mag` is `|w| / max|w|` over the destination node's own weights —
+/// piecewise-constant nodes spike to ±1/h at threshold crossings, and this per-node normalization
+/// absorbs them.
 #[derive(Clone, PartialEq)]
 struct Edge {
 	from: (String, usize),
@@ -418,6 +382,10 @@ struct Edge {
 	y1: f64,
 	x2: f64,
 	y2: f64,
+	/// How much this dep element moves that out element. Where the node answered the exact reading
+	/// this is its whole reach — the norm over every lag the body read, so an edge off a 60-bar
+	/// window is drawn as what the window does and not as what its newest bar does; where it did
+	/// not, it is the one-step column, which speaks for the newest element alone.
 	w: f64,
 	mag: f64,
 	/// Differentiated, or finite-differenced. What makes the two visibly different edges rather than
@@ -425,7 +393,38 @@ struct Edge {
 	exact: bool,
 }
 
-/// Resolves every non-zero jac entry of the frame to pixel endpoints: dep concat slot →
+/// One weight per `(out slot, dep slot)` taken over the dep's whole reach: the magnitude is the norm
+/// across the block's element-groups and the sign is that of the one reaching furthest into it, so
+/// an edge keeps the direction it drew in while its width comes to stand for the window.
+/// `None` — this node offered no exact block, and its one-step column is the whole reading.
+fn reach_weights(a: &Activation, lens: &[usize], out_len: usize) -> Option<Vec<Option<f64>>> {
+	let b = a.exact_block.as_ref()?;
+	assert_eq!(b.widths.len(), lens.len(), "one width per dep for {}", a.node);
+	assert_eq!(b.cols.len(), out_len * b.widths.iter().sum::<usize>(), "exact block shape mismatch for {}", a.node);
+	let mut out = Vec::with_capacity(out_len * lens.iter().sum::<usize>());
+	for i in 0..out_len {
+		let mut base = 0;
+		for (d, &len) in lens.iter().enumerate() {
+			let width = b.widths[d];
+			for slot in 0..len {
+				let (mut sq, mut peak, mut seen) = (0.0f64, 0.0f64, false);
+				for lag in 0..width / len {
+					let Some(w) = b.cols[base + i * width + lag * len + slot] else { continue };
+					seen = true;
+					sq += w * w;
+					if w.abs() > peak.abs() {
+						peak = w;
+					}
+				}
+				out.push(seen.then(|| sq.sqrt().copysign(peak)));
+			}
+			base += out_len * width;
+		}
+	}
+	Some(out)
+}
+
+/// Resolves every non-zero sensitivity of the frame to pixel endpoints: dep concat slot →
 /// (dep node, local element) via prefix sums over the deps' lens, both cells measured against
 /// the `.dag` origin so the overlay is scroll-invariant.
 fn measure_edges(acts: &[Activation], dep_lens: &AHashMap<String, usize>) -> Vec<Edge> {
@@ -443,13 +442,15 @@ fn measure_edges(acts: &[Activation], dep_lens: &AHashMap<String, usize>) -> Vec
 		let lens: Vec<usize> = a.deps.iter().map(|d| *dep_lens.get(d).expect("dep present in topology")).collect();
 		let total: usize = lens.iter().sum();
 		assert_eq!(jac.len(), out_len * total, "jac shape mismatch for {}", a.node);
-		let max_w = jac.iter().flatten().fold(0.0_f64, |m, w| m.max(w.abs()));
+		let reach = reach_weights(a, &lens, out_len);
+		let weights = reach.as_deref().unwrap_or(jac);
+		let max_w = weights.iter().flatten().fold(0.0_f64, |m, w| m.max(w.abs()));
 		if max_w == 0.0 {
 			continue;
 		}
 		for i in 0..out_len {
 			for j in 0..total {
-				let Some(w) = jac[i * total + j] else { continue };
+				let Some(w) = weights[i * total + j] else { continue };
 				if w == 0.0 {
 					continue;
 				}
