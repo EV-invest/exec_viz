@@ -828,7 +828,9 @@ impl Tape {
 	pub(crate) fn step_until(&mut self, node: &str) -> ActivationFrame {
 		match self.topology.iter().position(|n| n.node == node) {
 			Some(i) => self.scan(|t| t.acts.get(i).is_some_and(|a| a.vals.is_some())),
-			None => self.frame(),
+			// A name the graph does not carry is still a search that reached nothing — `c` pressed before
+			// the run has a `Classify` reads the same to the user as one that never fires again.
+			None => ActivationFrame { found: false, ..self.frame() },
 		}
 	}
 
@@ -1089,7 +1091,8 @@ mod tests {
 		let mut t = viz.lock();
 		let was = t.seek(300).tick;
 		let f = t.step_until("Absent");
-		assert_eq!(f.tick, was, "a search for a node that never fired moved the cursor");
+		assert_eq!(f.tick, was, "a search for a node the graph does not carry moved the cursor");
+		assert!(!f.found, "and it reported as though it had reached one");
 		// `N` fires every tick, so the one op that *is* a scan with nothing left to find is a scan
 		// started from the last tick.
 		t.seek(usize::MAX);
