@@ -1257,7 +1257,7 @@ dependencies = [
 
 [[package]]
 name = "exec_viz"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "rmp-serde",
@@ -1270,7 +1270,7 @@ dependencies = [
 
 [[package]]
 name = "exec_viz_web"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ahash",
  "dioxus",
