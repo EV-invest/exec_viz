@@ -137,6 +137,12 @@ The per-node chart series is *not* subject to any of this: it is downsampled onl
 
 ## Cross-cutting
 
+- **The recording is off the trading core.** A fire's graph-side leg is an append and a channel
+  push; naming, bucketing, thinning and the cost statistics are the tape thread's, which takes the
+  handoff in batches — one lock per up-to-`BATCH` ticks, and only under backlog, since it drains
+  what is already queued rather than waiting for a batch to fill. A thread rather than a future the
+  app drives: under `Backpressure::Block` the producer waiting on it is that core, so absorption
+  has to be unconditional.
 - **Fail loudly.** Boot failures panic (`EXEC_VIZ_WEB_DIR` unset, bind failure). A
   `price_node` that names nothing, or names a node that is not five-wide, panics rather than
   drawing an empty candle pane. The tape's mutex

@@ -42,6 +42,12 @@ use crate::{
 /// the one O(capacity) thing the consumer does — is absorbed rather than reflected back at the feed.
 const QUEUE: usize = 1024;
 
+/// Ticks the tape thread absorbs per lock acquisition, at most — bounded rather than open because it
+/// is also the width a reader can be made to wait behind. Clamped at [`Tape::new`] to `capacity / 4`,
+/// the room a thinning pass leaves, which is what keeps at most one such pass inside any one batch —
+/// the sizing the recycle channel below rests on.
+const BATCH: usize = 64;
+
 /// What a tape file opens with, so a file that is not one is refused before it is decoded.
 const TAPE_MAGIC: [u8; 8] = *b"EXECVIZT";
 /// The layout of everything after the header. Node names are `type_name` strings and so build-local,
@@ -54,6 +60,10 @@ const TAPE_SCHEMA: u32 = 2;
 pub enum Backpressure {
 	/// Wait for room. A replay wants the whole tape and its feed is a file that is not going
 	/// anywhere.
+	///
+	/// Which is why absorption is a thread rather than a future the app drives: here the producer
+	/// waiting on the consumer is the trading core, so a caller that stopped polling would stall the
+	/// graph [`QUEUE`] ticks later.
 	Block,
 	/// Drop the tick and count it. A live fill must never wait on a study aid — and a drop that
 	/// nobody counted is indistinguishable from a quiet market, so [`ActivationFrame::dropped`]
@@ -113,14 +123,30 @@ impl Tape {
 		// of one, and the recorder allocated a fresh tick's columns for six ticks in every seven.
 		let (back, recycle) = sync_channel(capacity / 2);
 		let tape = viz.clone();
+		let batch_cap = BATCH.min(capacity / 4).max(1);
 		let join = std::thread::Builder::new()
 			.name("exec_viz tape".into())
 			.spawn(move || {
-				for msg in rx {
-					let freed = tape.lock().absorb(msg);
+				let mut batch = Vec::with_capacity(batch_cap);
+				let mut freed = Vec::new();
+				//LOOP: the recv is the only way in, and it fails once every recorder is gone.
+				loop {
+					// Blocking, so an idle tape parks rather than spins.
+					let Ok(first) = rx.recv() else { break };
+					batch.push(first);
+					// Only what is already queued, never waited for: a feed at a few ticks a second sees
+					// batches of one, and the lock is amortized exactly when there is a backlog to amortize
+					// it over — which is when the latency it trades away is already gone.
+					batch.extend(rx.try_iter().take(batch_cap - 1));
+					{
+						let mut t = tape.lock();
+						for msg in batch.drain(..) {
+							freed.append(&mut t.absorb(msg));
+						}
+					}
 					// A full return channel is the recorder saying it is not allocating fast enough to
 					// want them back; dropping them here is exactly what it would have done.
-					freed.into_iter().try_for_each(|acts| back.try_send(acts)).ok();
+					freed.drain(..).try_for_each(|acts| back.try_send(acts)).ok();
 				}
 				tape.lock().sealed = true;
 				// The end of the recording, announced rather than only joinable: a recorder has no owner
