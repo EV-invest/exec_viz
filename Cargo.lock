@@ -1258,6 +1258,7 @@ dependencies = [
  "axum",
  "rmp-serde",
  "serde",
+ "serde_json",
  "tokio",
  "tower-http",
  "trading_data_dag",

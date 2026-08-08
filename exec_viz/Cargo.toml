@@ -32,5 +32,10 @@ tokio = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
 trading_data_dag = { workspace = true, optional = true }
 
+[dev-dependencies]
+# The `capacity` example reads its own replay ops back off the served tape — the browser's door, and
+# the only one a consumer has either.
+serde_json.workspace = true
+
 [lints]
 workspace = true

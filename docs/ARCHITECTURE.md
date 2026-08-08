@@ -85,19 +85,52 @@ unreachable for the rest of the run — and since there is no re-run, unreachabl
 permanent. Instead, once `capacity` is hit, `Tape::thin` keeps:
 
 - the newest `capacity / 2` ticks **whole**, so the fresh stretch stays tick-exact, and
-- every `stride`-th tick over everything before them, `stride` a doubling power of two.
+- over everything before them, a *backbone* of at most `capacity / 4` ticks — chosen by
+  fire rather than by index.
 
-Each pass therefore keeps a subset of what the last one kept, and frees a quarter of the
-buffer — one O(capacity) pass per `capacity / 4` ticks. A run many times the capacity is
-still walkable end to end, at coarsening resolution.
+**Decimating by tick index is proximity to the buffer, not to the problem.** What a human
+scrubs a tape for is the rare event, and a fixed stride destroys precisely those: at spl's
+318k ticks against a 20 000 tape the stride settled on 64, so a 5-minute bar that fired 576
+times over the window kept nine of them, and pressing "next change" crossed five hours per
+press.
 
-Two consequences worth knowing:
+So the unit of decimation is the *fire*. Every tick carries a `ranks` column — for each node
+that fired on it, `trailing_zeros` of that node's fire ordinal — and "keep one fire in `2^k`
+of node `i`" is then the single comparison `ranks[i] > keep[i]`. A tick survives if any node
+claims it. `keep` is per node and rises max-min fairly: count the retained fires per node
+over the pre-tail stretch, and while the union is over `capacity / 4`, raise the greediest
+node's exponent by one. Busy nodes absorb the whole squeeze; a node that never dominates
+never loses a fire.
+
+The rank column is what makes that a *subset filter* rather than a re-selection: it is
+computed once, on the tape thread, and the kept sets nest as `k` grows — so each pass still
+keeps a subset of what the last one kept, still frees between a quarter and a half of the
+buffer, and is still one O(capacity) pass per `capacity / 4` ticks. It rides on `Tick` and
+not on `Acts` deliberately: the `Acts` buffers are the graph thread's, recycled across the
+handoff, and `Rec::on`/`Rec::drop`/`Recorder::at` — the leg shared with live — are untouched
+by any of this.
+
+A node's very first fire has ordinal 0, whose `trailing_zeros` saturates above every `keep`,
+so it survives every squeeze. That is what keeps the front of a long recording addressable
+now that no index is privileged.
+
+What to size `capacity` to is a measurement, not an argument: `exec_viz/examples/capacity.rs`
+sweeps it for footprint, cursor latency and per-node addressability, and splices the block
+into `docs/.readme_assets/other.md` (raw copy at `docs/capacity.txt`).
+
+Three consequences worth knowing:
 
 - **The cursor is absolute** (an index among all ticks ever opened, not a buffer
   position), so a thinning pass cannot slide a parked cursor out from under the user.
 - **A carried-forward value is searched, not stamped.** A quiet node shows its last fired
   value; `Tape::held` scans back for it rather than remembering a tick number, because a
   remembered tick can be one a thinning pass has since dropped.
+- **A step admits its own width.** Past the capacity one retained step covers several
+  absolute ticks, so `ActivationFrame::gap` carries how many and the nav shows it. Likewise
+  `found`: a search that reaches the end of a *sealed* recording without a hit leaves the
+  cursor alone and says so, rather than answering a failed search by parking the user at the
+  end of the run. While the tape is still growing that end *is* the resume point, and there
+  the cursor does move — `pending` says the op will be re-issued from it.
 
 The per-node chart series is *not* subject to any of this: it is downsampled online into
 `bucket_ms` buckets on the way in, and kept for the whole run.

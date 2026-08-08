@@ -156,6 +156,13 @@ pub struct ActivationFrame {
 	pub dropped: usize,
 	/// This op ran out of recorded ticks — re-issuing it later will get further.
 	pub pending: bool,
+	/// The scan this frame answers reached what it was looking for. `true` for every op that is not
+	/// a scan, so a `false` here is a search that walked to the end of a sealed recording and found
+	/// nothing — which without saying so reads as a dead key.
+	pub found: bool,
+	/// Absolute ticks this retained tick stands for: its distance from the previous retained one, so
+	/// `1` is a contiguous stretch and anything larger is the resolution thinning has left here.
+	pub gap: usize,
 	pub ts_ns: i64,
 	pub activations: Vec<Activation>,
 }
