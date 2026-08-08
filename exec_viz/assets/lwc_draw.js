@@ -105,14 +105,18 @@ function attachTooltip(div, chart, tip, state) {
   chart.subscribeCrosshairMove(onCross);
   state.crosshair = onCross;
 
+  // the tooltip of a wide node outgrows its own pane, so the side it opens to is chosen against the
+  // viewport rather than the host: flipping to fit a narrow dock panel is what walked it off the page.
+  const fit = (p, size, limit) => {
+    const lead = p + 14;
+    const x = lead + size <= limit ? lead : p - size - 8;
+    return Math.min(Math.max(x, 0), Math.max(0, limit - size));
+  };
   const onMove = (e) => {
     const r = div.getBoundingClientRect();
-    let x = e.clientX - r.left + 14;
-    let y = e.clientY - r.top + 14;
-    if (x + tt.offsetWidth > r.width) x = e.clientX - r.left - tt.offsetWidth - 8;
-    if (y + tt.offsetHeight > r.height) y = Math.max(0, e.clientY - r.top - tt.offsetHeight - 8);
-    tt.style.left = `${x}px`;
-    tt.style.top = `${y}px`;
+    const doc = document.documentElement;
+    tt.style.left = `${fit(e.clientX, tt.offsetWidth, doc.clientWidth) - r.left}px`;
+    tt.style.top = `${fit(e.clientY, tt.offsetHeight, doc.clientHeight) - r.top}px`;
   };
   div.addEventListener("mousemove", onMove);
   state.ttMove = onMove;

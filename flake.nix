@@ -19,7 +19,7 @@
       let
         pkgs = import v_flakes.default_nixpkgs { inherit system; };
         rust = v_flakes.rs.default_nightly system;
-        pre-commit-check = pre-commit-hooks.lib.${system}.run (v_flakes.files.preCommit { inherit pkgs; });
+        pre-commit-check = pre-commit-hooks.lib.${system}.run (v_flakes.files.preCommit { inherit pkgs; stripClaudeSignature = true; });
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
 
         rs = v_flakes.rs {
