@@ -39,4 +39,4 @@ mod tape;
 #[cfg(feature = "server")]
 pub use server::web_dir;
 #[cfg(feature = "server")]
-pub use tape::{Backpressure, Rec, Recorder, Viz};
+pub use tape::{Backpressure, Rec, Recorder, Tape, Viz};

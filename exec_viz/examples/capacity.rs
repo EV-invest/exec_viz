@@ -13,7 +13,7 @@
 use std::{fmt::Write as _, net::SocketAddr, path::Path, time::Instant};
 
 use exec_viz::{
-	Backpressure, Viz,
+	Backpressure, Tape, Viz,
 	api_types::{ActivationFrame, SeekReq, StepReq, StepUntilReq},
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -141,7 +141,8 @@ async fn sweep() {
 /// The whole run through the real recorder, sealed — so what is served afterwards is what the
 /// thinning passes left, not a tape still being written.
 fn record(cap: usize, ticks: usize) -> Viz {
-	let (viz, mut rec) = Viz::new(None, cap, 60_000, Backpressure::Block);
+	let (tape, mut rec) = Tape::new(None, cap, 60_000, Backpressure::Block);
+	let viz = tape.viz();
 	for i in 0..ticks {
 		let mut r = rec.at(i as i64 * 1_000_000_000);
 		for n in &NODES {
@@ -157,6 +158,7 @@ fn record(cap: usize, ticks: usize) -> Viz {
 					clock: None,
 					fidelity: Fidelity::Exact,
 					fires: 1,
+					ran: i % n.period == 0,
 					vals: (i % n.period == 0).then(|| &vals[..n.dims[0]]),
 					dep_dims: &[],
 					jac: None,

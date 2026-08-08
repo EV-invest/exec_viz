@@ -1,5 +1,7 @@
-//! The attach surface: [`Recorder`] is the [`Observer`] the app hands to its own `tick_obs`, and
-//! [`Viz`] is the shared read side the server scrubs. Cloning a [`Viz`] shares the tape.
+//! The attach surface, in three types because there are three roles. [`Tape`] is the owner — one per
+//! recording, not `Clone`, and what ends the recording and writes it down. [`Recorder`] is the
+//! [`Observer`] the app hands to its own `tick_obs`, and the only write side. [`Viz`] is a read side,
+//! shared: cloning one shares the tape, and none of them can end or save it.
 //!
 //! Live-first, so the recording *is* the storage: a live run can't be re-run, which is what the
 //! old replay-by-rewinding-the-graph model assumed. Ticks land in a bounded buffer that thins with
@@ -10,8 +12,9 @@
 //! recycled column plus one channel push; naming the topology, bucketing the series, thinning and
 //! the cost statistics all happen on the tape thread, off the trading core.
 //!
-//! Storage, though, need not be memory: [`Viz::save`] writes the tape down and [`Viz::load`] reads
-//! one back, so a run can be looked at after the process that recorded it is gone.
+//! Storage, though, need not be memory: [`Tape::save`] writes the tape down and [`Viz::load`] reads
+//! one back, so a run can be looked at after the process that recorded it is gone. `load` hands back
+//! a [`Viz`] and not a [`Tape`], because a file has no recording to end.
 
 use std::{
 	collections::{HashSet, VecDeque},
@@ -19,7 +22,7 @@ use std::{
 	io::{BufReader, BufWriter, Read as _, Write as _},
 	path::Path,
 	sync::{
-		Arc, Mutex, MutexGuard,
+		Arc, Condvar, Mutex, MutexGuard,
 		atomic::{AtomicUsize, Ordering},
 		mpsc::{Receiver, SyncSender, TrySendError, sync_channel},
 	},
@@ -58,15 +61,21 @@ pub enum Backpressure {
 	Drop,
 }
 
-#[derive(Clone)]
-pub struct Viz {
-	tape: Arc<Mutex<Inner>>,
-	/// The tape thread, joinable from the read side: the one recorder is often swallowed by whatever
-	/// the app hands it to, and then nobody is left holding a [`Recorder::seal`] to wait on.
-	join: Arc<Mutex<Option<JoinHandle<()>>>>,
+/// The recording's owner: one per [`Tape::new`], and deliberately not `Clone`. There is one tape,
+/// one end of it, and saving spends it — which is what lets the join handle be a plain field here
+/// instead of a one-shot slot every reader shares mutable access to. Readers are [`Viz`]s taken off
+/// it, and a [`Viz`] can neither end the recording nor write it down.
+///
+/// Dropping the owner *detaches* the tape thread rather than joining it. Joining here would hang
+/// whenever the recorder is still alive — and the owner cannot reach the recorder's handoff to close
+/// it — so the sanctioned ends are [`Tape::save`] and [`Recorder::seal`]. A detached thread still
+/// terminates on its own the moment the recorder goes.
+pub struct Tape {
+	viz: Viz,
+	join: JoinHandle<()>,
 }
 
-impl Viz {
+impl Tape {
 	/// `price_node` names an OHLCV node — its recorded series *is* the candle pane, and it is skipped
 	/// in the indicator panes so it draws once; `None` = no price pane. Pass the node's own
 	/// [`Cell::NAME`](trading_data_dag::Cell::NAME) rather than a literal: a name is a `&'static str`
@@ -74,13 +83,13 @@ impl Viz {
 	/// `capacity` bounds the retained tick count — see [`Inner::thin`] for what a run longer than that
 	/// keeps — and `bucket_ms` is the chart's sample period.
 	///
-	/// Spawns the tape thread and hands back the read side and the one write side: a tape has many
+	/// Spawns the tape thread and hands back the owner and the one write side: a tape has many
 	/// readers and exactly one recorder, which is why they are different types.
 	pub fn new(price_node: Option<&'static str>, capacity: usize, bucket_ms: i64, mode: Backpressure) -> (Self, Recorder) {
 		assert!(capacity > 3 && bucket_ms > 0);
 		let dropped = Arc::new(AtomicUsize::new(0));
-		let viz = Self {
-			tape: Arc::new(Mutex::new(Tape {
+		let viz = Viz {
+			inner: Arc::new(Mutex::new(Inner {
 				price_node: price_node.map(str::to_string),
 				capacity,
 				bucket_ms,
@@ -95,7 +104,7 @@ impl Viz {
 				series: Vec::new(),
 				cursor: 0,
 			})),
-			join: Arc::new(Mutex::new(None)),
+			done: Arc::new(Condvar::new()),
 		};
 		let (tx, rx) = sync_channel(QUEUE);
 		// A thinning pass keeps the newest half whole, so it can never free more than `capacity / 2` at
@@ -113,11 +122,13 @@ impl Viz {
 					freed.into_iter().try_for_each(|acts| back.try_send(acts)).ok();
 				}
 				tape.lock().sealed = true;
+				// The end of the recording, announced rather than only joinable: a recorder has no owner
+				// to reach, so this is what [`Recorder::seal`] waits on.
+				tape.done.notify_all();
 			})
 			.expect("spawn the tape thread");
-		*viz.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(join);
 		(
-			viz.clone(),
+			Tape { viz: viz.clone(), join },
 			Recorder {
 				tx,
 				recycle,
@@ -137,6 +148,36 @@ impl Viz {
 		)
 	}
 
+	/// A reader — what the server is handed, and what every replay op goes through. Cheap to clone.
+	pub fn viz(&self) -> Viz {
+		self.viz.clone()
+	}
+
+	/// Blocks until the recording is over — every recorder dropped or sealed, every handed-off tick
+	/// absorbed — then writes the tape. What lands is what the tape held: a thinned run saves thinned,
+	/// because that is the recording.
+	///
+	/// By value: a tape is written down once, and spending the owner is what says so.
+	pub fn save(self, path: impl AsRef<Path>) -> std::io::Result<()> {
+		self.viz.wait_sealed();
+		// Immediate — the notify above was the thread's last act — and it is what makes "the recording
+		// is over" mean the thread is done touching the tape, not merely that it set a flag.
+		self.join.join().expect("the tape thread only ends by running out of ticks");
+		self.viz.write(path)
+	}
+}
+
+/// A read side, shared: what the server scrubs and what every replay op goes through. Cloning shares
+/// the tape. It cannot end the recording or save it — that is [`Tape`]'s, and there is one of those.
+#[derive(Clone)]
+pub struct Viz {
+	inner: Arc<Mutex<Inner>>,
+	/// Signalled once, by the tape thread's last act. What [`Recorder::seal`] waits on, since the join
+	/// handle belongs to the single owner and a recorder has no owner to reach.
+	done: Arc<Condvar>,
+}
+
+impl Viz {
 	/// What the retained ticks cost in memory, allocations included — the reading `capacity` is
 	/// actually bought with. Exported because the README's advice is measured against one synthetic
 	/// graph, and this is what lets it be re-measured against yours; `exec_viz`'s own `capacity`
@@ -148,11 +189,17 @@ impl Viz {
 		t.ticks.iter().map(Tick::bytes).sum()
 	}
 
-	/// Blocks until the recording is over — every recorder dropped or sealed, every handed-off tick
-	/// absorbed — then writes the tape. What lands is what the tape held: a thinned run saves thinned,
-	/// because that is the recording.
-	pub fn save(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
-		self.wait();
+	/// Waits for the tape thread to announce the end of the recording. Idempotent, and a no-op on a
+	/// tape read back from a file, which is sealed before anyone can ask.
+	fn wait_sealed(&self) {
+		let mut t = self.lock();
+		while !t.sealed {
+			t = self.done.wait(t).unwrap_or_else(std::sync::PoisonError::into_inner);
+		}
+	}
+
+	/// The write half of [`Tape::save`], with the waiting already done.
+	fn write(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
 		let t = self.lock();
 		// What is *addressable*, not what is held: a `total` naming a tick the file does not carry
 		// would be a tape that reads as truncated mid-walk rather than as one that ends.
@@ -201,7 +248,7 @@ impl Viz {
 		let file: TapeFile = rmp_serde::decode::from_read(&mut r).map_err(std::io::Error::other)?;
 
 		Ok(Self {
-			tape: Arc::new(Mutex::new(Tape {
+			inner: Arc::new(Mutex::new(Inner {
 				price_node: file.price_node,
 				capacity: file.capacity,
 				bucket_ms: file.bucket_ms,
@@ -216,24 +263,14 @@ impl Viz {
 				series: file.series,
 				cursor: file.cursor,
 			})),
-			join: Arc::new(Mutex::new(None)),
+			done: Arc::new(Condvar::new()),
 		})
-	}
-
-	/// Joins the tape thread, which ends when the last recorder's handoff is closed and drained. The
-	/// guard is held across the join so a second caller waits rather than racing past a recording that
-	/// is not over yet; a caller after that finds the slot empty and returns.
-	fn wait(&self) {
-		let mut slot = self.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-		if let Some(join) = slot.take() {
-			join.join().expect("the tape thread only ends by running out of ticks");
-		}
 	}
 
 	pub(crate) fn lock(&self) -> MutexGuard<'_, Inner> {
 		// Served concurrently with the recording it describes: a panicking handler must not cost the
 		// run its tape. Every op leaves the tape consistent, so the inner value is still readable.
-		self.tape.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+		self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 	}
 }
 
@@ -294,7 +331,7 @@ impl Recorder {
 	pub fn seal(self) {
 		let Recorder { tx, viz, .. } = self;
 		drop(tx);
-		viz.wait();
+		viz.wait_sealed();
 	}
 }
 
@@ -978,7 +1015,8 @@ mod tests {
 
 	#[test]
 	fn a_backwards_tick_leaves_the_series_ascending() {
-		let (viz, mut rec) = Viz::new(None, 8, 60_000, Backpressure::Block);
+		let (tape, mut rec) = Tape::new(None, 8, 60_000, Backpressure::Block);
+		let viz = tape.viz();
 		for min in [2, 3, 2, 4] {
 			let ts_ns = min * 60 * 1_000_000_000;
 			rec.at(ts_ns).on("N", &[], &[], fire(&[min as f64]));
@@ -993,7 +1031,8 @@ mod tests {
 	/// recording it just did. A recorder charging its own work forward would read every node alike.
 	#[test]
 	fn a_slow_step_is_charged_to_the_node_that_took_it() {
-		let (viz, mut rec) = Viz::new(None, 4096, 60_000, Backpressure::Block);
+		let (tape, mut rec) = Tape::new(None, 4096, 60_000, Backpressure::Block);
+		let viz = tape.viz();
 		// a few blocks' worth of clocked ticks, which is what it takes for an estimate to exist at all.
 		for i in 0..TICK_STRIDE * 32 {
 			let mut r = rec.at(i as i64 * 60 * 1_000_000_000);
@@ -1012,7 +1051,8 @@ mod tests {
 	/// burst of drops is still reported by whatever follows it.
 	#[test]
 	fn a_dropped_tick_is_counted_rather_than_lost() {
-		let (viz, mut rec) = Viz::new(None, 8, 60_000, Backpressure::Drop);
+		let (tape, mut rec) = Tape::new(None, 8, 60_000, Backpressure::Drop);
+		let viz = tape.viz();
 		let stepped = QUEUE + 64;
 		// The tape thread cannot absorb what it is blocked on, so the queue fills and stays full.
 		let held = viz.lock();
@@ -1030,7 +1070,8 @@ mod tests {
 	/// buffer's front, which left `seek(0)` landing wherever eviction happened to have reached.
 	#[test]
 	fn the_whole_run_stays_walkable_past_the_capacity() {
-		let (viz, mut rec) = Viz::new(None, 64, 60_000, Backpressure::Block);
+		let (tape, mut rec) = Tape::new(None, 64, 60_000, Backpressure::Block);
+		let viz = tape.viz();
 		for i in 0..5000 {
 			rec.at(i * 60 * 1_000_000_000).on("N", &[], &[], fire(&[i as f64]));
 		}
@@ -1054,7 +1095,8 @@ mod tests {
 		// `B`'s whole run has to fit under the backbone ceiling for "keeps every fire" to be a thing the
 		// tape can offer at all — 400 fires against 1024, the same order of headroom spl's 5-minute bar
 		// has (576 fires against 5000).
-		let (viz, mut rec) = Viz::new(None, 4096, 60_000, Backpressure::Block);
+		let (tape, mut rec) = Tape::new(None, 4096, 60_000, Backpressure::Block);
+		let viz = tape.viz();
 		for i in 0..TICKS {
 			let mut r = rec.at(i as i64 * 60 * 1_000_000_000);
 			r.on("A", &[], &[], fire(&[i as f64]));
@@ -1090,7 +1132,8 @@ mod tests {
 	/// cursor at that end, so a mistyped node name threw away where the user was reading.
 	#[test]
 	fn a_scan_that_finds_nothing_stays_put() {
-		let (viz, mut rec) = Viz::new(None, 64, 60_000, Backpressure::Block);
+		let (tape, mut rec) = Tape::new(None, 64, 60_000, Backpressure::Block);
+		let viz = tape.viz();
 		for i in 0..500 {
 			rec.at(i * 60 * 1_000_000_000).on("N", &[], &[], fire(&[i as f64]));
 		}
@@ -1115,7 +1158,8 @@ mod tests {
 	/// the same recording rather than merely the same ticks.
 	#[test]
 	fn a_saved_tape_reads_back_as_the_one_recorded() {
-		let (viz, mut rec) = Viz::new(Some("P"), 64, 60_000, Backpressure::Block);
+		let (tape, mut rec) = Tape::new(Some("P"), 64, 60_000, Backpressure::Block);
+		let viz = tape.viz();
 		for i in 0..5000 {
 			let mut r = rec.at(i * 60 * 1_000_000_000);
 			r.on(
@@ -1132,7 +1176,7 @@ mod tests {
 		rec.seal();
 
 		let path = std::env::temp_dir().join("exec_viz_round_trip.bin");
-		viz.save(&path).expect("save");
+		tape.save(&path).expect("save");
 		let back = Viz::load(&path).expect("load");
 		std::fs::remove_file(&path).expect("written above");
 
