@@ -237,25 +237,6 @@ impl Viz {
 	}
 }
 
-/// [`Tape`]'s persisted fields. Separate rather than serialized in place because two of the tape's
-/// are not data: `dropped` is shared with a recorder that no longer exists on the read-back side, and
-/// `sealed` is what a file is.
-#[derive(Deserialize, Serialize)]
-struct TapeFile {
-	price_node: Option<String>,
-	capacity: usize,
-	bucket_ms: i64,
-	topology: Vec<TopoNode>,
-	cost: Vec<Cost>,
-	ticks: Vec<Tick>,
-	opened: usize,
-	fires: Vec<usize>,
-	keep: Vec<u8>,
-	dropped: usize,
-	series: Vec<SeriesOut>,
-	cursor: usize,
-}
-
 /// The write side, and the only one: the graph thread's whole share of the recording. Not `Clone` —
 /// it owns the handoff to the tape thread and the buffers being recycled across it.
 pub struct Recorder {
@@ -284,7 +265,6 @@ pub struct Recorder {
 	idx: usize,
 	timed: bool,
 }
-
 impl Recorder {
 	/// Opens a tick and hands back the observer for it:
 	/// `graph.tick_obs(ts, batches, &mut recorder.at(ts))`. Dropping the returned [`Rec`] — at the end
@@ -321,6 +301,24 @@ impl Recorder {
 /// One opened tick's observer. Everything it writes goes into the recorder's recycled buffers; the
 /// tick crosses to the tape thread when this drops.
 pub struct Rec<'a>(&'a mut Recorder);
+/// [`Tape`]'s persisted fields. Separate rather than serialized in place because two of the tape's
+/// are not data: `dropped` is shared with a recorder that no longer exists on the read-back side, and
+/// `sealed` is what a file is.
+#[derive(Deserialize, Serialize)]
+struct TapeFile {
+	price_node: Option<String>,
+	capacity: usize,
+	bucket_ms: i64,
+	topology: Vec<TopoNode>,
+	cost: Vec<Cost>,
+	ticks: Vec<Tick>,
+	opened: usize,
+	fires: Vec<usize>,
+	keep: Vec<u8>,
+	dropped: usize,
+	series: Vec<SeriesOut>,
+	cursor: usize,
+}
 
 impl Observer for Rec<'_> {
 	/// A Jacobian is read by exactly one thing — [`Tape::frame`], for the single tick a client is

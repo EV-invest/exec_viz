@@ -32,46 +32,45 @@ const CAPS: [usize; 5] = [2_048, 8_192, 20_000, 65_536, 262_144];
 const SAMPLES: usize = 64;
 const BAR: usize = 44;
 
-/// A node of the synthetic mix: fires every `period` ticks, rendering `face` bytes when it does.
-struct Node {
-	name: &'static str,
-	period: usize,
-	face: usize,
-	dims: &'static [usize],
-}
-
 /// A minute of venue time in ticks, at spl's density — the unit the bar analogues are spaced by.
 const MIN: usize = TICKS_PER_DAY / 1440;
 /// The book node carries the whole per-tick face budget on its own: spl spreads it over four that
 /// all fire on nearly every tick, and what the tape holds is the sum either way.
 const NODES: [Node; 5] = [
-	Node { name: "Book", period: 1, face: GLANCE_BYTES_PER_TICK, dims: &[4] },
-	Node { name: "Screen", period: 100, face: 24, dims: &[3] },
-	Node { name: "Bar:1m", period: MIN, face: 24, dims: &[5] },
-	Node { name: "Bar:5m", period: 5 * MIN, face: 24, dims: &[5] },
-	Node { name: "Bar:1h", period: 60 * MIN, face: 24, dims: &[5] },
+	Node {
+		name: "Book",
+		period: 1,
+		face: GLANCE_BYTES_PER_TICK,
+		dims: &[4],
+	},
+	Node {
+		name: "Screen",
+		period: 100,
+		face: 24,
+		dims: &[3],
+	},
+	Node {
+		name: "Bar:1m",
+		period: MIN,
+		face: 24,
+		dims: &[5],
+	},
+	Node {
+		name: "Bar:5m",
+		period: 5 * MIN,
+		face: 24,
+		dims: &[5],
+	},
+	Node {
+		name: "Bar:1h",
+		period: 60 * MIN,
+		face: 24,
+		dims: &[5],
+	},
 ];
-
-/// One node's card face. Only its width is a measurement — the tape stores the rendering, not the
-/// value — so every node renders a slice of one string.
-struct Face(&'static str);
-impl Glance for Face {
-	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-		f.write_str(self.0)
-	}
-}
 const CARD: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-
-/// One sweep point.
-struct Row {
-	cap: usize,
-	retained: usize,
-	bytes: usize,
-	seek_us: f64,
-	/// Fires still reachable by `step_until`, positional with [`NODES`].
-	reach: Vec<usize>,
-}
-
+const BEGIN: &str = "<!-- capacity:begin -->";
+const END: &str = "<!-- capacity:end -->";
 fn main() {
 	// SAFETY: the process is still single-threaded — the runtime below spawns the first thread, and
 	// the tape thread comes later still. `serve_on` wants a built front-end and a sweep has no use for
@@ -82,6 +81,32 @@ fn main() {
 		.build()
 		.expect("a current-thread runtime asks nothing of the system")
 		.block_on(sweep());
+}
+/// A node of the synthetic mix: fires every `period` ticks, rendering `face` bytes when it does.
+struct Node {
+	name: &'static str,
+	period: usize,
+	face: usize,
+	dims: &'static [usize],
+}
+
+/// One node's card face. Only its width is a measurement — the tape stores the rendering, not the
+/// value — so every node renders a slice of one string.
+struct Face(&'static str);
+impl Glance for Face {
+	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		f.write_str(self.0)
+	}
+}
+
+/// One sweep point.
+struct Row {
+	cap: usize,
+	retained: usize,
+	bytes: usize,
+	seek_us: f64,
+	/// Fires still reachable by `step_until`, positional with [`NODES`].
+	reach: Vec<usize>,
 }
 
 async fn sweep() {
@@ -121,22 +146,27 @@ fn record(cap: usize, ticks: usize) -> Viz {
 		let mut r = rec.at(i as i64 * 1_000_000_000);
 		for n in &NODES {
 			let vals = [1.0, 2.0, 3.0, 4.0, 5.0];
-			r.on(n.name, &[], &[], Fire {
-				glance: &Face(&CARD[..n.face]),
-				dims: n.dims,
-				plots: &[Plot::DEFAULT],
-				clock: None,
-				fidelity: Fidelity::Exact,
-				fires: 1,
-				vals: (i % n.period == 0).then(|| &vals[..n.dims[0]]),
-				dep_dims: &[],
-				jac: None,
-				exact_block: None,
-				exact: false,
-				formula: None,
-				deriv: None,
-				trace: None,
-			});
+			r.on(
+				n.name,
+				&[],
+				&[],
+				Fire {
+					glance: &Face(&CARD[..n.face]),
+					dims: n.dims,
+					plots: &[Plot::DEFAULT],
+					clock: None,
+					fidelity: Fidelity::Exact,
+					fires: 1,
+					vals: (i % n.period == 0).then(|| &vals[..n.dims[0]]),
+					dep_dims: &[],
+					jac: None,
+					exact_block: None,
+					exact: false,
+					formula: None,
+					deriv: None,
+					trace: None,
+				},
+			);
 		}
 	}
 	rec.seal();
@@ -192,7 +222,16 @@ async fn read(addr: SocketAddr, cap: usize, bytes: usize, ticks: usize) -> (Row,
 		}
 		reach.push(hits);
 	}
-	(Row { cap, retained, bytes, seek_us: median(seek), reach }, median(hop))
+	(
+		Row {
+			cap,
+			retained,
+			bytes,
+			seek_us: median(seek),
+			reach,
+		},
+		median(hop),
+	)
 }
 
 /// Median rather than mean: one scheduler hiccup over a loopback socket is not the tape's cost.
@@ -205,7 +244,13 @@ fn render(rows: &[Row], fires: &[usize], ticks: usize, hop_us: f64) -> String {
 	let mut s = String::new();
 	let per_tick = NODES.iter().map(|n| n.face as f64 / n.period as f64).sum::<f64>();
 	let w = |s: &mut String, line: std::fmt::Arguments<'_>| s.write_fmt(line).expect("`String`'s `Write` is infallible");
-	w(&mut s, format_args!("{ticks} ticks ({DAYS} days at spl's {TICKS_PER_DAY}/day), {} nodes, {per_tick:.0} B/tick of card faces\n", NODES.len()));
+	w(
+		&mut s,
+		format_args!(
+			"{ticks} ticks ({DAYS} days at spl's {TICKS_PER_DAY}/day), {} nodes, {per_tick:.0} B/tick of card faces\n",
+			NODES.len()
+		),
+	);
 	w(&mut s, format_args!("fires over the run:"));
 	for (n, f) in NODES.iter().zip(fires) {
 		w(&mut s, format_args!("  {}={f}", n.name));
@@ -222,11 +267,9 @@ fn render(rows: &[Row], fires: &[usize], ticks: usize, hop_us: f64) -> String {
 		}
 		s.push('\n');
 	};
-	chart(
-		format_args!("footprint — Viz::bytes over the retained ticks\n"),
-		&|r| r.bytes as f64 / 1e6,
-		&|r, v| format!("{v:.1} MB  ({} B/tick)", r.bytes / r.retained),
-	);
+	chart(format_args!("footprint — Viz::bytes over the retained ticks\n"), &|r| r.bytes as f64 / 1e6, &|r, v| {
+		format!("{v:.1} MB  ({} B/tick)", r.bytes / r.retained)
+	});
 	// Above the hop, not including it: a loopback round trip is the larger half of every reading here
 	// and none of it is the tape's, so charting the raw number draws five bars of the same length.
 	chart(
@@ -250,9 +293,6 @@ fn render(rows: &[Row], fires: &[usize], ticks: usize, hop_us: f64) -> String {
 	}
 	s
 }
-
-const BEGIN: &str = "<!-- capacity:begin -->";
-const END: &str = "<!-- capacity:end -->";
 
 /// Splices the block into the hand-written prose, so the prose can say "measured" and mean it.
 fn splice(at: &Path, out: &str) {
@@ -281,12 +321,15 @@ impl Api {
 	async fn seek(&mut self, tick: usize) -> ActivationFrame {
 		self.post("seek", &SeekReq { tick }).await
 	}
+
 	async fn step(&mut self, n: usize) -> ActivationFrame {
 		self.post("step", &StepReq { n }).await
 	}
+
 	async fn step_until(&mut self, node: &str) -> ActivationFrame {
 		self.post("step_until", &StepUntilReq { node: node.into() }).await
 	}
+
 	/// Read for its cost and not its answer: the cheapest handler there is, so what it prices is the
 	/// socket rather than the tape.
 	async fn topology(&mut self) {
@@ -296,7 +339,10 @@ impl Api {
 
 	async fn post(&mut self, route: &str, body: &impl serde::Serialize) -> ActivationFrame {
 		let body = serde_json::to_string(body).expect("a request shape serializes");
-		let req = format!("POST /api/{route} HTTP/1.1\r\nHost: t\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+		let req = format!(
+			"POST /api/{route} HTTP/1.1\r\nHost: t\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+			body.len()
+		);
 		self.send(&req).await;
 		let body = self.recv().await;
 		serde_json::from_slice(&body).unwrap_or_else(|e| panic!("/api/{route} answered {}: {e}", String::from_utf8_lossy(&body)))
