@@ -138,6 +138,11 @@ pub fn Replay() -> Element {
 						let growing = if f.sealed { "" } else { "+" };
 						rsx! {
 							span { class: "pos", "event {f.tick}/{f.total}{growing}" }
+							// Past the capacity a step covers a stretch rather than a tick; saying how wide
+							// reads as a resolution the tape is admitting to, not as a stepper misbehaving.
+							if f.gap > 1 {
+								span { class: "pos", "×{f.gap}" }
+							}
 							span { class: "pos", "{fmt_ts(f.ts_ns)}" }
 							// A tape the run outran has holes in it; saying so is the difference between
 							// reading a gap as a quiet market and reading it as a gap.
@@ -198,6 +203,11 @@ pub fn Replay() -> Element {
 							if waiting("change") { " ⟳" }
 						}
 					}
+				}
+				// `n`, `b` and `c` all scan, and a scan that walks a sealed recording to its end without a
+				// hit leaves the cursor where it was — which without this reads as a dead key.
+				if frame.as_ref().is_some_and(|f| !f.found) {
+					span { class: "pos warn", "nothing further" }
 				}
 				span {
 					class: if state::VIEWS().is_empty() { "btn off" } else { "btn" },

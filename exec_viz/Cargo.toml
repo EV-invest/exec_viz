@@ -16,14 +16,24 @@ categories.workspace = true
 default = ["server"]
 # The recording `Viz` observer + the axum server over it. Native only; with it off the crate is
 # just `api_types`, which is all the wasm front-end (`exec_viz_web`) needs.
-server = ["dep:axum", "dep:tokio", "dep:tower-http", "dep:trading_data_dag"]
+server = [
+    "dep:axum",
+    "dep:rmp-serde",
+    "dep:tokio",
+    "dep:tower-http",
+    "dep:trading_data_dag",
+]
 
 [dependencies]
 axum = { workspace = true, optional = true }
+rmp-serde = { workspace = true, optional = true }
 serde.workspace = true
 tokio = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
 trading_data_dag = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

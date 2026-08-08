@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 /// A run dir is `runs/{run_id}/` where `run_id = {version}_{config_hash}` — collision-proof
 /// across logic and config versions.
 pub const RUNS_DIR: &str = "runs";
+/// One situation's saved [`Viz`](crate::Viz) tape — see [`Viz::save`](crate::Viz::save).
+pub const TAPE_FILE: &str = "tape.bin";
 pub const ORDERS_FILE: &str = "orders.parquet";
 pub const FILLS_FILE: &str = "fills.parquet";
 pub const DRAWINGS_FILE: &str = "drawings.parquet";
