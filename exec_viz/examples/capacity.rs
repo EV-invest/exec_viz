@@ -116,6 +116,9 @@ struct Row {
 	cap: usize,
 	retained: usize,
 	bytes: usize,
+	/// Wall clock of the whole recording over its ticks. Under [`Backpressure::Block`] with a
+	/// producer this trivial, what it prices is the tape thread.
+	rec_ns: f64,
 	seek_us: f64,
 	/// Fires still reachable by `step_until`, positional with [`NODES`].
 	reach: Vec<usize>,
@@ -127,7 +130,9 @@ async fn sweep() {
 	let mut rows = Vec::new();
 	let mut hop_us = 0.0;
 	for cap in CAPS {
+		let began = Instant::now();
 		let viz = record(cap, ticks);
+		let rec_ns = began.elapsed().as_secs_f64() * 1e9 / ticks as f64;
 		let bytes = viz.bytes();
 		let listener = Viz::bind(0).await;
 		let addr = listener.local_addr().expect("a bound listener has an address");
@@ -135,9 +140,15 @@ async fn sweep() {
 		// and drops it — no detached task outliving the measurement it was for.
 		let row = tokio::select! {
 			() = viz.serve_on(listener) => unreachable!("axum::serve returns only on an error it panics on"),
-			(row, hop) = read(addr, cap, bytes, ticks) => { hop_us = hop; row }
+			(row, hop) = read(addr, cap, bytes, ticks, rec_ns) => { hop_us = hop; row }
 		};
-		eprintln!("capacity {cap}: {} retained, {:.1} MB, {:.0}µs", row.retained, row.bytes as f64 / 1e6, row.seek_us);
+		eprintln!(
+			"capacity {cap}: {} retained, {:.1} MB, {:.0}ns/tick, {:.0}µs",
+			row.retained,
+			row.bytes as f64 / 1e6,
+			row.rec_ns,
+			row.seek_us
+		);
 		rows.push(row);
 	}
 
@@ -189,7 +200,7 @@ fn record(cap: usize, ticks: usize) -> Viz {
 
 /// Every reading that is a replay op, taken over the served tape. Hands back the row and the bare
 /// loopback round trip the latency in it should be read against.
-async fn read(addr: SocketAddr, cap: usize, bytes: usize, ticks: usize) -> (Row, f64) {
+async fn read(addr: SocketAddr, cap: usize, bytes: usize, ticks: usize, rec_ns: f64) -> (Row, f64) {
 	let mut api = Api::connect(addr).await;
 
 	// `step(n)` from the front parks at position `min(n, last)`, so the smallest `n` that reaches the
@@ -241,6 +252,7 @@ async fn read(addr: SocketAddr, cap: usize, bytes: usize, ticks: usize) -> (Row,
 			cap,
 			retained,
 			bytes,
+			rec_ns,
 			seek_us: median(seek),
 			reach,
 		},
@@ -290,6 +302,12 @@ fn render(rows: &[Row], fires: &[usize], ticks: usize, hop_us: f64) -> String {
 		format_args!("reactivity — one /api/seek mid-tape, median of {SAMPLES}; the bare loopback hop under it is {hop_us:.0}µs\n"),
 		&|r| r.seek_us,
 		&|_, v| format!("{v:.0}µs"),
+	);
+
+	chart(
+		format_args!("absorption — the whole recording's wall clock per tick, tape-thread bound under `Block`\n"),
+		&|r| r.rec_ns,
+		&|_, v| format!("{v:.0}ns"),
 	);
 
 	w(&mut s, format_args!("addressability — fires still reachable by `step_until`, against the run's own\n"));
