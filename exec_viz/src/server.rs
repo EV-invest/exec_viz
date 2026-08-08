@@ -34,7 +34,7 @@ impl Viz {
 		// Dev study tool relaunched constantly: `no-store` everywhere so a cached asset can't
 		// silently break against a new API shape. All payloads here are small.
 		let no_store = SetResponseHeaderLayer::overriding(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-		let web = web_dir();
+		let web = web_dir().expect(UNSET);
 		let app = Router::new()
 			.route("/api/topology", get(topology))
 			.route("/api/day", get(day))
@@ -55,10 +55,14 @@ impl Viz {
 	}
 }
 
+const UNSET: &str = "EXEC_VIZ_WEB_DIR: point it at a `dx build -p exec_viz_web` bundle";
+
 /// Root of a built `exec_viz_web` bundle. The app supplies it — this crate ships no front-end, and
-/// guessing at a path inside its own checkout is how a stale bundle gets served silently.
-fn web_dir() -> PathBuf {
-	PathBuf::from(std::env::var_os("EXEC_VIZ_WEB_DIR").expect("EXEC_VIZ_WEB_DIR: point it at a `dx build -p exec_viz_web` bundle"))
+/// guessing at a path inside its own checkout is how a stale bundle gets served silently. `None`
+/// rather than a panic so an app that records with a UI when there is one, and without when there
+/// is not, can ask instead of reading this crate's env var behind its back.
+pub fn web_dir() -> Option<PathBuf> {
+	std::env::var_os("EXEC_VIZ_WEB_DIR").map(PathBuf::from)
 }
 
 async fn topology(State(v): State<Viz>) -> impl IntoResponse {
@@ -101,7 +105,7 @@ async fn index(method: axum::http::Method) -> impl IntoResponse {
 	if method != axum::http::Method::GET {
 		return (StatusCode::NOT_FOUND, format!("no such route for {method}")).into_response();
 	}
-	let path = web_dir().join("index.html");
+	let path = web_dir().expect(UNSET).join("index.html");
 	match tokio::fs::read_to_string(&path).await {
 		Ok(s) => Html(s).into_response(),
 		Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("read {}: {e}", path.display())).into_response(),

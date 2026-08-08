@@ -9,10 +9,15 @@
 //! The two halves do not share a thread. The graph's leg of a fire is one `Glance` appended to a
 //! recycled column plus one channel push; naming the topology, bucketing the series, thinning and
 //! the cost statistics all happen on the tape thread, off the trading core.
+//!
+//! Storage, though, need not be memory: [`Viz::save`] writes the tape down and [`Viz::load`] reads
+//! one back, so a run can be looked at after the process that recorded it is gone.
 
 use std::{
 	collections::{HashSet, VecDeque},
 	fmt::Write as _,
+	io::{BufReader, BufWriter, Read as _, Write as _},
+	path::Path,
 	sync::{
 		Arc, Mutex, MutexGuard,
 		atomic::{AtomicUsize, Ordering},
@@ -22,6 +27,7 @@ use std::{
 	time::Instant,
 };
 
+use serde::{Deserialize, Serialize};
 use trading_data_dag::{Fidelity, Fire, Ink, Observer, Plot, Want};
 
 use crate::{
@@ -32,6 +38,13 @@ use crate::{
 /// Ticks the tape thread may lag by before the handoff is felt. Deep enough that a thinning pass —
 /// the one O(capacity) thing the consumer does — is absorbed rather than reflected back at the feed.
 const QUEUE: usize = 1024;
+
+/// What a tape file opens with, so a file that is not one is refused before it is decoded.
+const TAPE_MAGIC: [u8; 8] = *b"EXECVIZT";
+/// The layout of everything after the header. Node names are `type_name` strings and so build-local,
+/// but their arrangement is this crate's — bump on any change to [`Acts`], [`Tick`] or [`TapeFile`].
+/// Tagging with the build's commit instead would orphan every tape on an unrelated one.
+const TAPE_SCHEMA: u32 = 1;
 
 /// What a full handoff queue means for the tick being recorded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,7 +59,12 @@ pub enum Backpressure {
 }
 
 #[derive(Clone)]
-pub struct Viz(Arc<Mutex<Tape>>);
+pub struct Viz {
+	tape: Arc<Mutex<Tape>>,
+	/// The tape thread, joinable from the read side: the one recorder is often swallowed by whatever
+	/// the app hands it to, and then nobody is left holding a [`Recorder::seal`] to wait on.
+	join: Arc<Mutex<Option<JoinHandle<()>>>>,
+}
 
 impl Viz {
 	/// `price_node` names an OHLCV node — its recorded series *is* the candle pane, and it is skipped
@@ -61,20 +79,23 @@ impl Viz {
 	pub fn new(price_node: Option<&'static str>, capacity: usize, bucket_ms: i64, mode: Backpressure) -> (Self, Recorder) {
 		assert!(capacity > 3 && bucket_ms > 0);
 		let dropped = Arc::new(AtomicUsize::new(0));
-		let viz = Self(Arc::new(Mutex::new(Tape {
-			price_node: price_node.map(str::to_string),
-			capacity,
-			bucket_ms,
-			topology: Vec::new(),
-			cost: Vec::new(),
-			ticks: VecDeque::new(),
-			opened: 0,
-			stride: 1,
-			sealed: false,
-			dropped: dropped.clone(),
-			series: Vec::new(),
-			cursor: 0,
-		})));
+		let viz = Self {
+			tape: Arc::new(Mutex::new(Tape {
+				price_node: price_node.map(str::to_string),
+				capacity,
+				bucket_ms,
+				topology: Vec::new(),
+				cost: Vec::new(),
+				ticks: VecDeque::new(),
+				opened: 0,
+				stride: 1,
+				sealed: false,
+				dropped: dropped.clone(),
+				series: Vec::new(),
+				cursor: 0,
+			})),
+			join: Arc::new(Mutex::new(None)),
+		};
 		let (tx, rx) = sync_channel(QUEUE);
 		// A thinning pass keeps the newest half whole, so it can never free more than `capacity / 2` at
 		// once and a return channel that deep takes any one pass entire. At [`QUEUE`] it took a seventh
@@ -93,12 +114,13 @@ impl Viz {
 				tape.lock().sealed = true;
 			})
 			.expect("spawn the tape thread");
+		*viz.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(join);
 		(
-			viz,
+			viz.clone(),
 			Recorder {
 				tx,
 				recycle,
-				join,
+				viz,
 				mode,
 				raw: Vec::new(),
 				meta: None,
@@ -114,11 +136,109 @@ impl Viz {
 		)
 	}
 
+	/// Blocks until the recording is over — every recorder dropped or sealed, every handed-off tick
+	/// absorbed — then writes the tape. What lands is what the tape held: a thinned run saves thinned,
+	/// because that is the recording.
+	pub fn save(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
+		self.wait();
+		let t = self.lock();
+		// What is *addressable*, not what is held: a `total` naming a tick the file does not carry
+		// would be a tape that reads as truncated mid-walk rather than as one that ends.
+		let last = t.last();
+		let file = TapeFile {
+			price_node: t.price_node.clone(),
+			capacity: t.capacity,
+			bucket_ms: t.bucket_ms,
+			topology: t.topology.clone(),
+			cost: t.cost.clone(),
+			ticks: t.ticks.iter().take(last.map_or(0, |l| l + 1)).cloned().collect(),
+			opened: t.head(),
+			stride: t.stride,
+			dropped: t.dropped.load(Ordering::Relaxed),
+			series: t.series.clone(),
+			cursor: t.cursor,
+		};
+
+		let mut w = BufWriter::new(std::fs::File::create(path)?);
+		w.write_all(&TAPE_MAGIC)?;
+		w.write_all(&TAPE_SCHEMA.to_le_bytes())?;
+		rmp_serde::encode::write(&mut w, &file).map_err(std::io::Error::other)?;
+		w.flush()
+	}
+
+	/// A tape read back. Sealed by definition — a file does not grow — so there is no [`Recorder`]
+	/// and every replay op is addressable from the first request.
+	pub fn load(path: impl AsRef<Path>) -> std::io::Result<Self> {
+		let path = path.as_ref();
+		let mut r = BufReader::new(std::fs::File::open(path)?);
+		let mut magic = [0u8; 8];
+		r.read_exact(&mut magic)?;
+		if magic != TAPE_MAGIC {
+			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{} is not an exec_viz tape", path.display())));
+		}
+		let mut schema = [0u8; 4];
+		r.read_exact(&mut schema)?;
+		let schema = u32::from_le_bytes(schema);
+		if schema != TAPE_SCHEMA {
+			return Err(std::io::Error::new(
+				std::io::ErrorKind::InvalidData,
+				format!("{} is a schema-{schema} tape and this build reads schema {TAPE_SCHEMA} — re-record it", path.display()),
+			));
+		}
+		let file: TapeFile = rmp_serde::decode::from_read(&mut r).map_err(std::io::Error::other)?;
+
+		Ok(Self {
+			tape: Arc::new(Mutex::new(Tape {
+				price_node: file.price_node,
+				capacity: file.capacity,
+				bucket_ms: file.bucket_ms,
+				topology: file.topology,
+				cost: file.cost,
+				ticks: file.ticks.into(),
+				opened: file.opened,
+				stride: file.stride,
+				sealed: true,
+				dropped: Arc::new(AtomicUsize::new(file.dropped)),
+				series: file.series,
+				cursor: file.cursor,
+			})),
+			join: Arc::new(Mutex::new(None)),
+		})
+	}
+
+	/// Joins the tape thread, which ends when the last recorder's handoff is closed and drained. The
+	/// guard is held across the join so a second caller waits rather than racing past a recording that
+	/// is not over yet; a caller after that finds the slot empty and returns.
+	fn wait(&self) {
+		let mut slot = self.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+		if let Some(join) = slot.take() {
+			join.join().expect("the tape thread only ends by running out of ticks");
+		}
+	}
+
 	pub(crate) fn lock(&self) -> MutexGuard<'_, Tape> {
 		// Served concurrently with the recording it describes: a panicking handler must not cost the
 		// run its tape. Every op leaves the tape consistent, so the inner value is still readable.
-		self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+		self.tape.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 	}
+}
+
+/// [`Tape`]'s persisted fields. Separate rather than serialized in place because two of the tape's
+/// are not data: `dropped` is shared with a recorder that no longer exists on the read-back side, and
+/// `sealed` is what a file is.
+#[derive(Deserialize, Serialize)]
+struct TapeFile {
+	price_node: Option<String>,
+	capacity: usize,
+	bucket_ms: i64,
+	topology: Vec<TopoNode>,
+	cost: Vec<Cost>,
+	ticks: Vec<Tick>,
+	opened: usize,
+	stride: usize,
+	dropped: usize,
+	series: Vec<SeriesOut>,
+	cursor: usize,
 }
 
 /// The write side, and the only one: the graph thread's whole share of the recording. Not `Clone` —
@@ -128,7 +248,8 @@ pub struct Recorder {
 	/// Drained columns coming back from the tape with their capacities intact, which is what makes a
 	/// fire's rendering a memcpy rather than an allocation.
 	recycle: Receiver<Acts>,
-	join: JoinHandle<()>,
+	/// Only ever waited on — see [`Recorder::seal`].
+	viz: Viz,
 	mode: Backpressure,
 	/// The stepped nodes' names, positional. The per-fire step-order check compares against this, and
 	/// its length is what says a node is new and still owes its [`Meta`].
@@ -176,9 +297,9 @@ impl Recorder {
 	/// and `total` stops growing. By value, so the handle you recorded through is spent. A live feed
 	/// never calls this — dropping the recorder says the same thing without the wait.
 	pub fn seal(self) {
-		let Recorder { tx, join, .. } = self;
+		let Recorder { tx, viz, .. } = self;
 		drop(tx);
-		join.join().expect("the tape thread only ends by running out of ticks");
+		viz.wait();
 	}
 }
 
@@ -307,7 +428,7 @@ struct TickMsg {
 /// keeps it by column: a per-node `String` and two `Vec`s were three heap pointers each and the tape
 /// holds `capacity` ticks of them. Step order is fixed and asserted, so the columns are appended
 /// front to back and a node is a set of ends into each.
-#[derive(Default)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 struct Acts {
 	outs: String,
 	vals: Vec<f64>,
@@ -357,7 +478,7 @@ impl Acts {
 	}
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Deserialize, Serialize)]
 struct Ends {
 	out: u32,
 	vals: u32,
@@ -377,6 +498,7 @@ struct ActRef<'a> {
 	exact: bool,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
 struct Tick {
 	/// Index among *all* ticks ever opened, so a tick's id survives every thinning pass.
 	abs: usize,
@@ -820,19 +942,57 @@ mod tests {
 			rec.at(i * 60 * 1_000_000_000).on("N", &[], &[], fire(&[i as f64]));
 		}
 		rec.seal();
-		let mut t = viz.lock();
-		assert_eq!(t.seek(0).tick, 1, "the recording's first tick is addressable");
-		let mut walk = vec![t.frame().tick];
-		loop {
-			let tick = t.step(1).tick;
-			if tick == *walk.last().expect("seeded") {
-				break;
-			}
-			walk.push(tick);
-		}
-		assert_eq!(*walk.last().expect("seeded"), 5000, "and so is its last: {walk:?}");
+		let walk = walk(&viz);
+		assert_eq!(walk.first(), Some(&1), "the recording's first tick is addressable");
+		assert_eq!(walk.last(), Some(&5000), "and so is its last: {walk:?}");
 		assert!(walk.windows(2).all(|w| w[0] < w[1]), "no step stands still: {walk:?}");
 		// The freshest stretch is kept whole, so stepping through it moves one tick at a time.
 		assert!(walk.windows(2).rev().take(8).all(|w| w[1] - w[0] == 1), "{walk:?}");
+	}
+
+	/// A tape read back is the tape that was recorded. Past the capacity on purpose: what survives a
+	/// save is what the thinning passes left, so the walk is the one thing that can say the file holds
+	/// the same recording rather than merely the same ticks.
+	#[test]
+	fn a_saved_tape_reads_back_as_the_one_recorded() {
+		let (viz, mut rec) = Viz::new(Some("P"), 64, 60_000, Backpressure::Block);
+		for i in 0..5000 {
+			let mut r = rec.at(i * 60 * 1_000_000_000);
+			r.on(
+				"P",
+				&[],
+				&[],
+				Fire {
+					dims: &[5],
+					..fire(&[1.0, 2.0, 0.5, i as f64, 10.0])
+				},
+			);
+			r.on("N", &["P"], &[false], fire(&[i as f64]));
+		}
+		rec.seal();
+
+		let path = std::env::temp_dir().join("exec_viz_round_trip.bin");
+		viz.save(&path).expect("save");
+		let back = Viz::load(&path).expect("load");
+		std::fs::remove_file(&path).expect("written above");
+
+		assert_eq!(back.lock().topology(), viz.lock().topology());
+		let (was, is) = (viz.lock().day(), back.lock().day());
+		assert_eq!(is.price_node, was.price_node);
+		assert_eq!(is.series, was.series);
+		assert_eq!(walk(&back), walk(&viz));
+	}
+
+	/// `seek(0)`, then `step(1)` to a standstill: every position the tape is addressable at, in order.
+	fn walk(viz: &Viz) -> Vec<usize> {
+		let mut t = viz.lock();
+		let mut walk = vec![t.seek(0).tick];
+		loop {
+			let tick = t.step(1).tick;
+			if tick == *walk.last().expect("seeded") {
+				return walk;
+			}
+			walk.push(tick);
+		}
 	}
 }

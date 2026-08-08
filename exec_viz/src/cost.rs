@@ -30,7 +30,7 @@ pub(crate) const TICK_STRIDE: usize = 64;
 const WARM: f64 = 8.0;
 const WARM_GAIN: f64 = 0.3;
 
-#[derive(Default)]
+#[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
 pub(crate) struct Cost {
 	block_n: usize,
 	block_min: f64,

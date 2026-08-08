@@ -7,10 +7,17 @@ browser that walks it tick by tick.
 
 ## The one idea
 
-**The recording is the storage.** The obvious design — keep the graph, rewind it, re-run
-to tick *n* — assumes the run is reproducible. A live feed is not: it happened once. So
-every tick is written down as it fires, and every replay control is a cursor move over
-that write-down. Nothing is ever recomputed.
+**The recording is the storage — and the storage can be a file.** The obvious design —
+keep the graph, rewind it, re-run to tick *n* — assumes the run is reproducible. A live
+feed is not: it happened once. So every tick is written down as it fires, and every replay
+control is a cursor move over that write-down. Nothing is ever recomputed.
+
+Because the tape is the whole of what a viewer reads, `Viz::save` can put it on disk and
+`Viz::load` can open it again — a run recorded today is scrubbable next week, and whether
+a UI was attached while it ran is a separate question from whether it was recorded. What
+lands is what the tape held: a thinned run saves thinned, because that *is* the recording.
+The file is `msgpack` behind a magic + a `TAPE_SCHEMA` that refuses a layout this build
+does not read, rather than reinterpreting the bytes.
 
 That single choice sets the shape of everything else:
 
@@ -45,7 +52,8 @@ flowchart LR
   holds the node `topology` (recorded once, on the first tick), the tick ring, the
   downsampled per-node `series` (`price_node`'s *is* the candle pane), and the cursor. Every replay op —
   `step`, `seek`, `seek_ts`, `step_until`, `step_until_change` — is a method here that
-  moves the cursor and returns an `ActivationFrame`.
+  moves the cursor and returns an `ActivationFrame`. `save` waits out the recording and
+  writes the tape down; `load` opens one back, sealed, with no recorder.
 - `server` — axum router and handlers, one thin `Json(...)` line each. Runtime-free:
   `serve_on` is a plain future taking an already-bound listener, so the app decides where
   it runs. Also serves the built `exec_viz_web` bundle (`EXEC_VIZ_WEB_DIR`) with an SPA
@@ -53,9 +61,9 @@ flowchart LR
 - `api_types` — the wire shapes, and the only module that compiles without the `server`
   feature. That split is what lets the wasm client depend on this same crate for its
   types without dragging axum and tokio onto a wasm target.
-- `record` — schema-only: the `runs/{run_id}/` layout and row shapes (orders, fills,
-  drawings) that sibling strategies each hand-roll today. Writers land with the first
-  migration onto it.
+- `record` — the `runs/{run_id}/` layout: `TAPE_FILE`, plus the row shapes (orders, fills,
+  drawings) that sibling strategies each hand-roll today. The lanes other than the tape are
+  still schema-only; their writers land with the first migration onto it.
 
 `exec_viz_web` (the wasm front-end, `publish = false` — it is a bundle, not a crate):
 
