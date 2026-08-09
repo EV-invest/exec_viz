@@ -6,7 +6,7 @@ default-members = ["exec_viz"]
 resolver = "3"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
 license = "BlueOak-1.0.0"
@@ -33,7 +33,7 @@ axum = "0.8"
 # --- web (Dioxus/wasm) frontend. wasm-bindgen pinned in lockstep with wasm-bindgen-cli (flake) and v_utils. ---
 dioxus = { version = "0.7", features = ["web"] }
 dockviewers_dioxus = "0.2"
-exec_viz = { path = "exec_viz", version = "0.2.0", default-features = false }
+exec_viz = { path = "exec_viz", version = "0.3.0", default-features = false }
 futures = "^0.3"
 getrandom = { version = "=0.3.4", features = ["wasm_js"] } # Named in `exec_viz_web`'s source: `dx` passes `--cfg getrandom_backend="wasm_js"` to every wasm unit, and the backend is a compile error without the matching feature. `ahash` (via `ustr`, so `v_utils`) is what puts getrandom on the wasm target, so the 0.3 line is the one to turn it on for.
 gloo-net = { version = "0.7", features = ["http"] }
