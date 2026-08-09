@@ -35,7 +35,7 @@ dioxus = { version = "0.7", features = ["web"] }
 dockviewers_dioxus = "0.2"
 exec_viz = { path = "exec_viz", version = "0.2.0", default-features = false }
 futures = "^0.3"
-getrandom = { version = "=0.4.3", features = ["wasm_js"] }
+getrandom = { version = "=0.3.4", features = ["wasm_js"] } # Named in `exec_viz_web`'s source: `dx` passes `--cfg getrandom_backend="wasm_js"` to every wasm unit, and the backend is a compile error without the matching feature. `ahash` (via `ustr`, so `v_utils`) is what puts getrandom on the wasm target, so the 0.3 line is the one to turn it on for.
 gloo-net = { version = "0.7", features = ["http"] }
 gloo-timers = { version = "0.4", features = ["futures"] }
 js-sys = "0.3"
@@ -44,8 +44,11 @@ serde = { version = "^1.0.229", features = ["derive"] }
 serde_json = "^1"
 tokio = { version = "^1", features = ["full"] }
 tower-http = { version = "0.7", features = ["fs", "set-header"] }
-trading_data_dag = { path = "../trading_data/trading_data_dag", version = "0.3.0" }
+trading_data_dag = "0.3.0"
 v_utils = { version = "^2.17.4", features = ["io", "macros", "cli"] }
 wasm-bindgen = "=0.2.125"
 wasm-bindgen-futures = "0.4"
 web-sys = "0.3"
+
+[patch.crates-io]
+trading_data_dag.path = "../trading_data/trading_data_dag"
