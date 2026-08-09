@@ -130,9 +130,8 @@ impl Tape {
 				let mut batch = Vec::with_capacity(batch_cap);
 				let mut freed = Vec::new();
 				//LOOP: the recv is the only way in, and it fails once every recorder is gone.
-				loop {
-					// Blocking, so an idle tape parks rather than spins.
-					let Ok(first) = rx.recv() else { break };
+				// Blocking, so an idle tape parks rather than spins.
+				while let Ok(first) = rx.recv() {
 					batch.push(first);
 					// Only what is already queued, never waited for: a feed at a few ticks a second sees
 					// batches of one, and the lock is amortized exactly when there is a backlog to amortize
@@ -146,7 +145,11 @@ impl Tape {
 					}
 					// A full return channel is the recorder saying it is not allocating fast enough to
 					// want them back; dropping them here is exactly what it would have done.
-					freed.drain(..).try_for_each(|acts| back.try_send(acts)).ok();
+					for acts in freed.drain(..) {
+						if back.try_send(acts).is_err() {
+							break;
+						}
+					}
 				}
 				tape.lock().sealed = true;
 				// The end of the recording, announced rather than only joinable: a recorder has no owner
