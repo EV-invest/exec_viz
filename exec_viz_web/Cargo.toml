@@ -40,7 +40,7 @@ serde_json.workspace = true
 v_utils = { workspace = true, features = ["lightweight_charts", "wasm"] }
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
-web-sys = { workspace = true, features = ["Document", "DomRect", "Element", "HtmlElement", "Storage", "Window", "KeyboardEvent", "console"] }
+web-sys = { workspace = true, features = ["Document", "DomRect", "Element", "HtmlElement", "Storage", "Url", "Window", "KeyboardEvent", "console"] }
 
 [lints]
 workspace = true

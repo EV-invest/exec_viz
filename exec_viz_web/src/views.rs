@@ -89,7 +89,10 @@ pub fn Replay() -> Element {
 			polls += 1;
 			let playing = *state::PLAYING.peek();
 			let sealed = state::FRAME.peek().as_ref().is_some_and(|f| f.sealed);
-			let following = *state::FOLLOW.peek() && !sealed;
+			// Following needs a frame first, not merely the absence of one: before boot's `refresh_status`
+			// lands there is nothing saying the tape is sealed, and a step to the head raced it to decide
+			// where a finished recording opens.
+			let following = *state::FOLLOW.peek() && state::FRAME.peek().is_some() && !sealed;
 			if following {
 				state::step(usize::MAX).await;
 			} else if playing {
@@ -286,9 +289,7 @@ fn ChartPane() -> Element {
 			let spec = serde_json::json!({ "theme": "#131722", "hidden": hidden }).to_string();
 			spawn(async move {
 				let el = chart_el().expect("the chart host renders with this pane");
-				// Relative: under a Pages project site the bundle is not at the document root, and an
-				// absolute path there names a file on the *user* site.
-				banner.set(v_utils::lwc::mount(el, "lwc_draw.js", &json, &spec).await);
+				banner.set(v_utils::lwc::mount(el, &draw_url(), &json, &spec).await);
 			});
 		}
 	});
@@ -363,6 +364,23 @@ async fn handle_key(key: &str, bar: Option<&str>) {
 		"C" => state::clear_views(),
 		_ => {}
 	}
+}
+
+/// Where the chart shim is, absolute. Resolved against the document rather than written down: the
+/// `import()` that fetches it runs inside a wasm-bindgen snippet under `wasm/snippets/…`, so a
+/// relative specifier resolves *there*, and a rooted one names the user site rather than the
+/// project one when Pages serves the bundle under `/exec_viz/`.
+fn draw_url() -> String {
+	let base = web_sys::window()
+		.expect("wasm32 target always runs in a browser")
+		.document()
+		.expect("a browser window has a document")
+		.base_uri()
+		.expect("document takes property reads")
+		.expect("a loaded document has a URI");
+	web_sys::Url::new_with_base("lwc_draw.js", &base)
+		.expect("a plain file name against the document's own URI")
+		.href()
 }
 
 fn chart_el() -> Option<web_sys::HtmlElement> {

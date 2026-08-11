@@ -1,0 +1,64 @@
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  pages: write
+  id-token: write
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+# .cargo/config.toml pins rustc-wrapper=sccache for local dev; runners have no sccache.
+env:
+  RUSTC_WRAPPER: ""
+  # The recorded spl run the demo scrubs. A release asset rather than a tracked file, so neither
+  # this repo's history nor trading_data's carries the megabytes; re-record and re-upload under the
+  # same tag to change what the demo shows.
+  TAPE: https://github.com/EV-invest/exec_viz/releases/download/demo-tape/demo.tape
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: dioxus-cli,wasm-bindgen-cli@0.2.125
+      # dx --release runs wasm-opt; install it so the build doesn't depend on dx auto-fetching it.
+      - run: sudo apt-get update && sudo apt-get install -y binaryen
+      # Pages serves this project site under /exec_viz/; base_path is baked into the wasm at compile
+      # time. --base-path keeps it CI-only, so local `dx serve` stays at / . `--features demo` is the
+      # whole difference between the two bundles: the cursor runs in the visitor's own heap, over a
+      # tape fetched once, because a `Viz` has one cursor and a shared server would hand everyone it.
+      - name: Build wasm
+        run: dx build --release --platform web --package exec_viz_web --features demo --base-path exec_viz
+      # The chart shim `server.rs` serves at runtime, and the tape that bundle boots from — a static
+      # site has no handler for either, so they are files beside index.html.
+      - name: Stage the demo's runtime files
+        run: |
+          out=target/dx/exec_viz_web/release/web/public
+          cp exec_viz/assets/lwc_draw.js "$out/"
+          curl -fsSL "$TAPE" -o "$out/demo.tape"
+          ls -l "$out/demo.tape"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/dx/exec_viz_web/release/web/public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
