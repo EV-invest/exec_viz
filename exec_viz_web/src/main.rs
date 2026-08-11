@@ -6,6 +6,7 @@
 mod dag;
 mod keyboard;
 mod state;
+mod transport;
 mod views;
 
 use dioxus::prelude::*;

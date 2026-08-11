@@ -286,7 +286,9 @@ fn ChartPane() -> Element {
 			let spec = serde_json::json!({ "theme": "#131722", "hidden": hidden }).to_string();
 			spawn(async move {
 				let el = chart_el().expect("the chart host renders with this pane");
-				banner.set(v_utils::lwc::mount(el, "/lwc_draw.js", &json, &spec).await);
+				// Relative: under a Pages project site the bundle is not at the document root, and an
+				// absolute path there names a file on the *user* site.
+				banner.set(v_utils::lwc::mount(el, "lwc_draw.js", &json, &spec).await);
 			});
 		}
 	});

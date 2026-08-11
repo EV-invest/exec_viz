@@ -1,8 +1,10 @@
-//! axum router + JSON handlers over a [`Viz`] tape. Router shape (nested ServeDir + SPA
-//! `fallback`) mirrors `scam_pump_liqs/viz/src/server.rs`; the tape is a single mutex — this is a
-//! single-user study tool. Runtime-free: `serve` is a plain future taking the port it binds, so
-//! whoever owns the graph also owns where the server runs. Any boot failure is a loud panic — no
-//! fallbacks.
+//! axum router over a [`Viz`] tape: JSON transport and nothing else — every cursor move is one
+//! [`Op`] handed to [`Viz::dispatch`], so what a route knows is how to decode, not what the op
+//! means. Router shape (nested ServeDir + SPA `fallback`) mirrors
+//! `scam_pump_liqs/viz/src/server.rs`; the tape is a single mutex — this is a single-user study
+//! tool, and a hosted demo is the same front-end over a tape it holds itself rather than over
+//! this. Runtime-free: `serve` is a plain future taking the port it binds, so whoever owns the
+//! graph also owns where the server runs. Any boot failure is a loud panic — no fallbacks.
 
 use std::{net::SocketAddr, path::PathBuf};
 
@@ -15,10 +17,7 @@ use axum::{
 };
 use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
 
-use crate::{
-	api_types::{SeekReq, SeekTsReq, StepReq, StepUntilChangeReq, StepUntilReq},
-	tape::Viz,
-};
+use crate::{api_types::Op, tape::Viz};
 
 impl Viz {
 	/// Bound separately from [`Viz::serve_on`] so a caller that records and serves concurrently can
@@ -38,12 +37,7 @@ impl Viz {
 		let app = Router::new()
 			.route("/api/topology", get(topology))
 			.route("/api/day", get(day))
-			.route("/api/status", get(status))
-			.route("/api/step", post(step))
-			.route("/api/seek", post(seek))
-			.route("/api/seek_ts", post(seek_ts))
-			.route("/api/step_until", post(step_until))
-			.route("/api/step_until_change", post(step_until_change))
+			.route("/api/op", post(op))
 			.route("/lwc_draw.js", get(lwc_draw))
 			.nest_service("/wasm", ServeDir::new(web.join("wasm")))
 			.nest_service("/assets", ServeDir::new(web.join("assets")))
@@ -66,35 +60,15 @@ pub fn web_dir() -> Option<PathBuf> {
 }
 
 async fn topology(State(v): State<Viz>) -> impl IntoResponse {
-	Json(v.lock().topology())
+	Json(v.topology())
 }
 
 async fn day(State(v): State<Viz>) -> impl IntoResponse {
-	Json(v.lock().day())
+	Json(v.day())
 }
 
-async fn status(State(v): State<Viz>) -> impl IntoResponse {
-	Json(v.lock().frame())
-}
-
-async fn step(State(v): State<Viz>, Json(req): Json<StepReq>) -> impl IntoResponse {
-	Json(v.lock().step(req.n))
-}
-
-async fn seek(State(v): State<Viz>, Json(req): Json<SeekReq>) -> impl IntoResponse {
-	Json(v.lock().seek(req.tick))
-}
-
-async fn seek_ts(State(v): State<Viz>, Json(req): Json<SeekTsReq>) -> impl IntoResponse {
-	Json(v.lock().seek_ts(req.ts_ns))
-}
-
-async fn step_until(State(v): State<Viz>, Json(req): Json<StepUntilReq>) -> impl IntoResponse {
-	Json(v.lock().step_until(&req.node))
-}
-
-async fn step_until_change(State(v): State<Viz>, Json(req): Json<StepUntilChangeReq>) -> impl IntoResponse {
-	Json(v.lock().step_until_change(&req.nodes))
+async fn op(State(v): State<Viz>, Json(op): Json<Op>) -> impl IntoResponse {
+	Json(v.dispatch(op))
 }
 
 /// SPA fallback: every non-asset, non-API *GET* serves the dx bundle's index.html (200) so a

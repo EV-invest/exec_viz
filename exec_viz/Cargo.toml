@@ -14,15 +14,15 @@ categories.workspace = true
 
 [features]
 default = ["server"]
-# The recording `Viz` observer + the axum server over it. Native only; with it off the crate is
-# just `api_types`, which is all the wasm front-end (`exec_viz_web`) needs.
-server = [
-    "dep:axum",
-    "dep:rmp-serde",
-    "dep:tokio",
-    "dep:tower-http",
-    "dep:trading_data_dag",
-]
+# The read half: `Viz`, the cursor ops, and the msgpack file both ends of. `rmp-serde` is the whole
+# of it, so a front-end can hold the tape it scrubs instead of asking a server for it — which is
+# what gives a hosted demo one cursor per visitor. `trading_data_dag` is deliberately *not* here:
+# it carries `v_utils`, and through it `rand`/`getrandom`, which do not build for
+# wasm32-unknown-unknown without a backend cfg the recording side has no reason to make a bundle
+# take on.
+tape = ["dep:rmp-serde"]
+# The recording half (`Tape`/`Recorder`/`Rec`) and the axum server over it. Native.
+server = ["tape", "dep:axum", "dep:tokio", "dep:tower-http", "dep:trading_data_dag"]
 
 [dependencies]
 axum = { workspace = true, optional = true }

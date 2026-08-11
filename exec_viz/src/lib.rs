@@ -25,18 +25,27 @@
 //!
 //! It owns no front-end either: the browser half is the sibling `exec_viz_web` bin, and the app
 //! points `EXEC_VIZ_WEB_DIR` at a built bundle of it.
+//!
+//! Two features, because the read half is not the recording half. `tape` is [`Viz`], the cursor ops
+//! [`Viz::dispatch`] carries and the file [`Viz::from_bytes`] reads — `rmp-serde` and nothing else,
+//! so it builds for wasm and a front-end can hold the recording it scrubs instead of asking a
+//! server for it. `server` adds the recorder and axum on top. That split is what a hosted demo is:
+//! a `Viz` has exactly one cursor, so a shared server would hand every visitor the same one, and a
+//! tape per browser heap gives each of them their own.
 
 pub mod api_types;
 
-#[cfg(feature = "server")]
+#[cfg(feature = "tape")]
 mod cost;
 #[cfg(feature = "server")]
 pub mod record;
 #[cfg(feature = "server")]
 mod server;
-#[cfg(feature = "server")]
+#[cfg(feature = "tape")]
 mod tape;
 #[cfg(feature = "server")]
 pub use server::web_dir;
+#[cfg(feature = "tape")]
+pub use tape::Viz;
 #[cfg(feature = "server")]
-pub use tape::{Backpressure, Rec, Recorder, Tape, Viz};
+pub use tape::{Backpressure, Rec, Recorder, Tape};

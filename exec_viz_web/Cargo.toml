@@ -16,6 +16,13 @@ name = "exec_viz_web"
 path = "src/main.rs"
 test = false
 
+[features]
+# The hosted-demo bundle: the tape is fetched once and scrubbed in this heap, so there is no server
+# to hold the one cursor a `Viz` has and every visitor gets their own. Off = the app-served bundle,
+# which talks to `exec_viz`'s axum half over JSON. A build-time choice because they are two
+# artifacts, not two modes.
+demo = ["exec_viz/tape"]
+
 # `exec_viz` is pulled in with default features off — that leaves just `api_types`, so none of the
 # axum/tokio server half is dragged onto the wasm target.
 [dependencies]

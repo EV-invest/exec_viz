@@ -1,7 +1,10 @@
 //! Wire shapes shared by the axum server (serializes) and the Dioxus web client (deserializes).
-//! `#[cfg]`-neutral — both features compile this module. The fat `/api/day` chart payload is
+//! `#[cfg]`-neutral — every feature compiles this module. The fat `/api/day` chart payload is
 //! deliberately absent from the client side: the web half holds it as an opaque JSON string and
 //! hands it straight to the chart shim.
+//!
+//! [`Op`] is the shared half of that client: with the `tape` feature the front-end answers it from
+//! a `Viz` in its own heap instead of over HTTP, and this module is what both readings agree on.
 
 use serde::{Deserialize, Serialize};
 
@@ -172,27 +175,33 @@ pub struct ActivationFrame {
 	pub activations: Vec<Activation>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct StepReq {
-	pub n: usize,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct SeekReq {
-	pub tick: usize,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct SeekTsReq {
-	pub ts_ns: i64,
-}
-
+/// A move of the cursor, and every one there is — all of them answering with an
+/// [`ActivationFrame`], which is what lets a transport be a transport and nothing else. Named
+/// rather than routed: the JSON server and a front-end holding its own tape are two carriers of
+/// this one value, and a per-op route table on each side would be two copies of `Viz::dispatch`'s
+/// match to keep in step.
+///
+/// The two reads that are *not* cursor moves — the topology and the chart payload — are fetched
+/// once at boot and are not here; the chart payload in particular is opaque on purpose, and going
+/// through a tagged answer would mean parsing what no Rust on either side wants parsed.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct StepUntilReq {
-	pub node: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct StepUntilChangeReq {
-	pub nodes: Vec<String>,
+pub enum Op {
+	/// Where the cursor already is. Moves nothing — it is what a page opened against a running app
+	/// picks its position up from.
+	Status,
+	Step {
+		n: usize,
+	},
+	Seek {
+		tick: usize,
+	},
+	SeekTs {
+		ts_ns: i64,
+	},
+	StepUntil {
+		node: String,
+	},
+	StepUntilChange {
+		nodes: Vec<String>,
+	},
 }

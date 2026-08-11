@@ -3963,7 +3963,9 @@ dependencies = [
 
 [[package]]
 name = "trading_data_dag"
-version = "0.5.0"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8942bf99037c0e0d48423a69fd30dd4d9a595ff3d9171127d893497f16ce0b8c"
 dependencies = [
  "trading_data_expr",
  "trading_data_macros",
@@ -3972,14 +3974,18 @@ dependencies = [
 
 [[package]]
 name = "trading_data_expr"
-version = "0.5.0"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60aa067f60e59265d911c318fc7bab8906fdb41145f89a74a5611aa67560494e"
 dependencies = [
  "libm",
 ]
 
 [[package]]
 name = "trading_data_macros"
-version = "0.5.0"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4dfb0dcd37d9afbc31872767079ff8cc91a608feef044b6baee300e935520386"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",

@@ -19,15 +19,20 @@
 //! for signal-to-noise `λ = q/r`. Differencing makes the series MA(1) — `Var(Δy) = q + 2r` and
 //! `Cov(Δy_t, Δy_{t−1}) = −r` — so both variances come off moments of `Δy`, with nothing to tune.
 
+#[cfg(feature = "server")]
 use std::time::Instant;
 
 /// Samples per block minimum. Large enough that a block usually contains an unpreempted step,
 /// small enough that a node's cost changing mid-run is still visible within a few hundred ticks.
+#[cfg(feature = "server")]
 const BLOCK: usize = 16;
 /// Ticks between clocked ticks — see the module note on what a clock read costs.
+#[cfg(feature = "server")]
 pub(crate) const TICK_STRIDE: usize = 64;
 /// Block minima needed before the moments mean anything; until then the gain is a plain warm-up.
+#[cfg(feature = "server")]
 const WARM: f64 = 8.0;
+#[cfg(feature = "server")]
 const WARM_GAIN: f64 = 0.3;
 
 #[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
@@ -49,6 +54,7 @@ pub(crate) struct Cost {
 }
 
 impl Cost {
+	#[cfg(feature = "server")]
 	pub(crate) fn sample(&mut self, ns: f64) {
 		self.block_min = if self.block_n == 0 { ns } else { self.block_min.min(ns) };
 		self.block_n += 1;
@@ -82,6 +88,7 @@ impl Cost {
 		(self.weight > 0.0).then(|| self.ema / self.weight)
 	}
 
+	#[cfg(feature = "server")]
 	fn gain(&self) -> f64 {
 		if self.ndd < WARM {
 			return WARM_GAIN;
@@ -103,8 +110,10 @@ impl Cost {
 }
 
 /// The step-order clock: `mark` closes the span that ended here and opens the next one.
+#[cfg(feature = "server")]
 pub(crate) struct Clock(Instant);
 
+#[cfg(feature = "server")]
 impl Clock {
 	pub(crate) fn new() -> Self {
 		Clock(Instant::now())
@@ -119,7 +128,7 @@ impl Clock {
 	}
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "server"))]
 mod tests {
 	use super::*;
 

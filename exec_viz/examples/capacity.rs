@@ -14,7 +14,7 @@ use std::{fmt::Write as _, net::SocketAddr, path::Path, time::Instant};
 
 use exec_viz::{
 	Backpressure, Tape, Viz,
-	api_types::{ActivationFrame, SeekReq, StepReq, StepUntilReq},
+	api_types::{ActivationFrame, Op},
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use trading_data_dag::{Fidelity, Fire, Glance, Observer as _, Plot};
@@ -351,15 +351,15 @@ impl Api {
 	}
 
 	async fn seek(&mut self, tick: usize) -> ActivationFrame {
-		self.post("seek", &SeekReq { tick }).await
+		self.post(Op::Seek { tick }).await
 	}
 
 	async fn step(&mut self, n: usize) -> ActivationFrame {
-		self.post("step", &StepReq { n }).await
+		self.post(Op::Step { n }).await
 	}
 
 	async fn step_until(&mut self, node: &str) -> ActivationFrame {
-		self.post("step_until", &StepUntilReq { node: node.into() }).await
+		self.post(Op::StepUntil { node: node.into() }).await
 	}
 
 	/// Read for its cost and not its answer: the cheapest handler there is, so what it prices is the
@@ -369,15 +369,15 @@ impl Api {
 		self.recv().await;
 	}
 
-	async fn post(&mut self, route: &str, body: &impl serde::Serialize) -> ActivationFrame {
-		let body = serde_json::to_string(body).expect("a request shape serializes");
+	async fn post(&mut self, op: Op) -> ActivationFrame {
+		let body = serde_json::to_string(&op).expect("a request shape serializes");
 		let req = format!(
-			"POST /api/{route} HTTP/1.1\r\nHost: t\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+			"POST /api/op HTTP/1.1\r\nHost: t\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
 			body.len()
 		);
 		self.send(&req).await;
-		let body = self.recv().await;
-		serde_json::from_slice(&body).unwrap_or_else(|e| panic!("/api/{route} answered {}: {e}", String::from_utf8_lossy(&body)))
+		let out = self.recv().await;
+		serde_json::from_slice(&out).unwrap_or_else(|e| panic!("{body} answered {}: {e}", String::from_utf8_lossy(&out)))
 	}
 
 	async fn send(&mut self, req: &str) {

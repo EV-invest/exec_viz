@@ -1,17 +1,20 @@
-//! Data layer + shared state: all `/api/*` calls, the current [`ActivationFrame`], and the
-//! free-run knobs. Every frame that lands also moves the chart's replay cursor.
+//! Data layer + shared state: every cursor op, the current [`ActivationFrame`], and the free-run
+//! knobs. Every frame that lands also moves the chart's replay cursor. What answers an op is
+//! [`crate::transport`]'s business, not this module's.
 //!
-//! The tape is served while it is still being written, so an op can name a tick that has not been
-//! recorded yet. The server says so (`pending`) rather than blocking, and [`WAITING`] is how the UI
-//! shows which control is still chasing the feed.
+//! A tape may still be being written, so an op can name a tick that has not been recorded yet. The
+//! tape says so (`pending`) rather than blocking, and [`WAITING`] is how the UI shows which control
+//! is still chasing the feed. On a recording read back from a file none of that fires: it is sealed
+//! before the first op reaches it.
 
 use std::future::Future;
 
 use ahash::{AHashMap, AHashSet};
 use dioxus::prelude::*;
-use exec_viz::api_types::{ActivationFrame, SeekReq, SeekTsReq, StepReq, StepUntilChangeReq, StepUntilReq, TopoNode};
-use gloo_net::http::Request;
+use exec_viz::api_types::{ActivationFrame, Op, TopoNode};
 use wasm_bindgen::{JsCast as _, JsValue};
+
+use crate::transport;
 
 const VIEWS_KEY: &str = "exec-viz-views";
 pub static FRAME: GlobalSignal<Option<ActivationFrame>> = Signal::global(|| None);
@@ -54,47 +57,45 @@ pub fn clear_views() {
 	save_views(&v);
 }
 
-/// Empty until the recording's first tick closes: the server withholds a half-built topology, and
-/// the resource stays `None` (= "loading…") until there is a whole one.
+/// Empty until the recording's first tick closes: a half-built topology is withheld, and the
+/// resource stays `None` (= "loading…") until there is a whole one.
 pub async fn fetch_topology() -> Result<Vec<TopoNode>, String> {
 	// A page opened ahead of the run has nothing to do but wait; a transport error still exits via `?`.
 	//LOOP: bounded by the feed, not by us — the recording's first tick closes when it closes.
 	loop {
-		let t: Vec<TopoNode> = get_json("/api/topology").await?;
+		let t = transport::topology().await?;
 		if !t.is_empty() {
 			return Ok(t);
 		}
 		gloo_timers::future::TimeoutFuture::new(100).await;
 	}
 }
-/// Raw `/api/day` body — never parsed by Rust, handed straight to the chart shim.
+/// The raw chart payload — never parsed by Rust, handed straight to the chart shim.
 pub async fn fetch_day() -> Result<String, String> {
-	let resp = Request::get("/api/day").send().await.map_err(|e| e.to_string())?;
-	let text = resp.text().await.map_err(|e| e.to_string())?;
-	if resp.ok() { Ok(text) } else { Err(text) }
+	transport::day().await
 }
 pub async fn refresh_status() {
-	apply(get_json("/api/status").await);
+	apply(transport::op(Op::Status).await);
 }
 /// Free-run's stepper: takes whatever the tape has. Sitting at the head while playing is the feed
 /// pacing us, not a wait, so `pending` is ignored and no control is marked.
 pub async fn step(n: usize) {
-	apply(post_json("/api/step", &StepReq { n }).await);
+	apply(transport::op(Op::Step { n }).await);
 }
 pub async fn step_one() {
-	until_recorded("step", || async { post_json("/api/step", &StepReq { n: 1 }).await }).await;
+	until_recorded("step", || transport::op(Op::Step { n: 1 })).await;
 }
 pub async fn seek(tick: usize) {
-	until_recorded("seek", || async move { post_json("/api/seek", &SeekReq { tick }).await }).await;
+	until_recorded("seek", || transport::op(Op::Seek { tick })).await;
 }
 /// Where a click on the chart lands: the newest tick at or before the bar clicked. Shares `seek`'s
 /// [`WAITING`] key — they are the same control, one addressed by tick and one by time.
 pub async fn seek_ts(ts_ns: i64) {
-	until_recorded("seek", || async move { post_json("/api/seek_ts", &SeekTsReq { ts_ns }).await }).await;
+	until_recorded("seek", || transport::op(Op::SeekTs { ts_ns })).await;
 }
 pub async fn step_until(node: &str) {
 	let node = node.to_string();
-	until_recorded(&node, || async { post_json("/api/step_until", &StepUntilReq { node: node.clone() }).await }).await;
+	until_recorded(&node, || transport::op(Op::StepUntil { node: node.clone() })).await;
 }
 /// Skip to the next change in any selected node. No selection ⇒ no-op.
 pub async fn step_until_change() {
@@ -102,7 +103,7 @@ pub async fn step_until_change() {
 	if nodes.is_empty() {
 		return;
 	}
-	until_recorded("change", || async { post_json("/api/step_until_change", &StepUntilChangeReq { nodes: nodes.clone() }).await }).await;
+	until_recorded("change", || transport::op(Op::StepUntilChange { nodes: nodes.clone() })).await;
 }
 pub fn toggle_select(node: &str) {
 	let mut sel = SELECTED.write();
@@ -150,8 +151,9 @@ fn local_storage() -> Result<Option<web_sys::Storage>, JsValue> {
 static GENERATION: GlobalSignal<u64> = Signal::global(|| 0);
 
 /// Re-issues `op` every 100ms while the tape cannot yet satisfy it, holding `key` in [`WAITING`].
-/// Re-issuing is what makes this correct without server-side state: `seek` is absolute, a scan
-/// resumes from wherever it got to, and a `pending` step advanced nothing.
+/// Re-issuing is what makes this correct without state on the answering side: `seek` is absolute, a
+/// scan resumes from wherever it got to, and a `pending` step advanced nothing. A sealed tape never
+/// answers `pending`, so this runs its body once.
 async fn until_recorded<F, Fut>(key: &str, op: F)
 where
 	F: Fn() -> Fut,
@@ -213,22 +215,4 @@ fn set_cursor(ts_ns: i64) {
 	if let Some(f) = hook.dyn_ref::<js_sys::Function>() {
 		let _ = f.call1(&JsValue::NULL, &JsValue::from_f64(ts_ns as f64 / 1e9)); // draw errors surface in the console, not here
 	}
-}
-
-/// GET + parse JSON, surfacing a non-2xx body verbatim (the server sends plain-text errors, so a
-/// raw `.json()` would mask them as an opaque parse failure).
-async fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, String> {
-	let resp = Request::get(url).send().await.map_err(|e| e.to_string())?;
-	if !resp.ok() {
-		return Err(resp.text().await.unwrap_or_default());
-	}
-	resp.json().await.map_err(|e| e.to_string())
-}
-
-async fn post_json<B: serde::Serialize, T: serde::de::DeserializeOwned>(url: &str, body: &B) -> Result<T, String> {
-	let resp = Request::post(url).json(body).map_err(|e| e.to_string())?.send().await.map_err(|e| e.to_string())?;
-	if !resp.ok() {
-		return Err(resp.text().await.unwrap_or_default());
-	}
-	resp.json().await.map_err(|e| e.to_string())
 }

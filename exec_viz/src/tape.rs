@@ -18,12 +18,18 @@
 
 use std::{
 	collections::{HashSet, VecDeque},
-	fmt::Write as _,
-	io::{BufReader, BufWriter, Read as _, Write as _},
 	path::Path,
 	sync::{
-		Arc, Condvar, Mutex, MutexGuard,
+		Arc, Mutex, MutexGuard,
 		atomic::{AtomicUsize, Ordering},
+	},
+};
+#[cfg(feature = "server")]
+use std::{
+	fmt::Write as _,
+	io::{BufWriter, Write as _},
+	sync::{
+		Condvar,
 		mpsc::{Receiver, SyncSender, TrySendError, sync_channel},
 	},
 	thread::JoinHandle,
@@ -31,21 +37,29 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "server")]
 use trading_data_dag::{Fidelity, Fire, Ink, Observer, Plot, Want};
 
 use crate::{
-	api_types::{Activation, ActivationFrame, DayOut, ExactBlock, FidelityOut, GuideOut, InkOut, PlotOut, PointOut, SeriesOut, TopoNode},
-	cost::{Clock, Cost, TICK_STRIDE},
+	api_types::{Activation, ActivationFrame, DayOut, ExactBlock, Op, SeriesOut, TopoNode},
+	cost::Cost,
+};
+#[cfg(feature = "server")]
+use crate::{
+	api_types::{FidelityOut, GuideOut, InkOut, PlotOut, PointOut},
+	cost::{Clock, TICK_STRIDE},
 };
 
 /// Ticks the tape thread may lag by before the handoff is felt. Deep enough that a thinning pass —
 /// the one O(capacity) thing the consumer does — is absorbed rather than reflected back at the feed.
+#[cfg(feature = "server")]
 const QUEUE: usize = 1024;
 
 /// Ticks the tape thread absorbs per lock acquisition, at most — bounded rather than open because it
 /// is also the width a reader can be made to wait behind. Clamped at [`Tape::new`] to `capacity / 4`,
 /// the room a thinning pass leaves, which is what keeps at most one such pass inside any one batch —
 /// the sizing the recycle channel below rests on.
+#[cfg(feature = "server")]
 const BATCH: usize = 64;
 
 /// What a tape file opens with, so a file that is not one is refused before it is decoded.
@@ -56,6 +70,7 @@ const TAPE_MAGIC: [u8; 8] = *b"EXECVIZT";
 const TAPE_SCHEMA: u32 = 2;
 
 /// What a full handoff queue means for the tick being recorded.
+#[cfg(feature = "server")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Backpressure {
 	/// Wait for room. A replay wants the whole tape and its feed is a file that is not going
@@ -80,11 +95,13 @@ pub enum Backpressure {
 /// whenever the recorder is still alive — and the owner cannot reach the recorder's handoff to close
 /// it — so the sanctioned ends are [`Tape::save`] and [`Recorder::seal`]. A detached thread still
 /// terminates on its own the moment the recorder goes.
+#[cfg(feature = "server")]
 pub struct Tape {
 	viz: Viz,
 	join: JoinHandle<()>,
 }
 
+#[cfg(feature = "server")]
 impl Tape {
 	/// `price_node` names an OHLCV node — its recorded series *is* the candle pane, and it is skipped
 	/// in the indicator panes so it draws once; `None` = no price pane. Pass the node's own
@@ -204,6 +221,7 @@ pub struct Viz {
 	inner: Arc<Mutex<Inner>>,
 	/// Signalled once, by the tape thread's last act. What [`Recorder::seal`] waits on, since the join
 	/// handle belongs to the single owner and a recorder has no owner to reach.
+	#[cfg(feature = "server")]
 	done: Arc<Condvar>,
 }
 
@@ -221,6 +239,7 @@ impl Viz {
 
 	/// Waits for the tape thread to announce the end of the recording. Idempotent, and a no-op on a
 	/// tape read back from a file, which is sealed before anyone can ask.
+	#[cfg(feature = "server")]
 	fn wait_sealed(&self) {
 		let mut t = self.lock();
 		while !t.sealed {
@@ -229,6 +248,7 @@ impl Viz {
 	}
 
 	/// The write half of [`Tape::save`], with the waiting already done.
+	#[cfg(feature = "server")]
 	fn write(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
 		let t = self.lock();
 		// What is *addressable*, not what is held: a `total` naming a tick the file does not carry
@@ -256,37 +276,42 @@ impl Viz {
 		w.flush()
 	}
 
-	/// A tape read back. Sealed by definition — a file does not grow — so there is no [`Recorder`]
-	/// and every replay op is addressable from the first request.
+	/// A tape read back off disk. Sealed by definition — a file does not grow — so there is no
+	/// [`Recorder`] and every replay op is addressable from the first request.
 	pub fn load(path: impl AsRef<Path>) -> std::io::Result<Self> {
 		let path = path.as_ref();
-		let mut r = BufReader::new(std::fs::File::open(path)?);
-		let mut magic = [0u8; 8];
-		r.read_exact(&mut magic)?;
-		if magic != TAPE_MAGIC {
-			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{} is not an exec_viz tape", path.display())));
-		}
-		let mut schema = [0u8; 4];
-		r.read_exact(&mut schema)?;
-		let schema = u32::from_le_bytes(schema);
+		// Whole rather than streamed: the decode holds the tape in memory anyway, and it is what lets
+		// this and the browser's fetched-bytes case be the one reader below.
+		Self::from_bytes(&std::fs::read(path)?).map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", path.display())))
+	}
+
+	/// [`Viz::load`] over bytes already in hand — what a browser has after one fetch, and the only way
+	/// in on a target with no filesystem. The header is checked before a byte is decoded: a tape
+	/// written at another [`TAPE_SCHEMA`] must say so rather than be reinterpreted under this one.
+	pub fn from_bytes(bytes: &[u8]) -> std::io::Result<Self> {
+		let bad = |msg: String| std::io::Error::new(std::io::ErrorKind::InvalidData, msg);
+		let rest = bytes.strip_prefix(&TAPE_MAGIC).ok_or_else(|| bad("not an exec_viz tape".into()))?;
+		let (schema, rest) = rest.split_at_checked(size_of::<u32>()).ok_or_else(|| bad("tape header ends mid-schema".into()))?;
+		let schema = u32::from_le_bytes(schema.try_into().expect("split at four bytes"));
 		if schema != TAPE_SCHEMA {
-			return Err(std::io::Error::new(
-				std::io::ErrorKind::InvalidData,
-				format!("{} is a schema-{schema} tape and this build reads schema {TAPE_SCHEMA} — re-record it", path.display()),
-			));
+			return Err(bad(format!("schema-{schema} tape, and this build reads schema {TAPE_SCHEMA} — re-record it")));
 		}
-		let file: TapeFile = rmp_serde::decode::from_read(&mut r).map_err(std::io::Error::other)?;
+		let file: TapeFile = rmp_serde::decode::from_slice(rest).map_err(std::io::Error::other)?;
 		let ticks: VecDeque<Tick> = file.ticks.into();
 
 		Ok(Self {
 			inner: Arc::new(Mutex::new(Inner {
 				price_node: file.price_node,
+				#[cfg(feature = "server")]
 				capacity: file.capacity,
+				#[cfg(feature = "server")]
 				bucket_ms: file.bucket_ms,
 				topology: file.topology,
 				cost: file.cost,
 				opened: file.opened,
+				#[cfg(feature = "server")]
 				fires: file.fires,
+				#[cfg(feature = "server")]
 				keep: file.keep,
 				fired: index(&ticks),
 				ticks,
@@ -295,11 +320,38 @@ impl Viz {
 				series: file.series,
 				cursor: file.cursor,
 			})),
+			#[cfg(feature = "server")]
 			done: Arc::new(Condvar::new()),
 		})
 	}
 
-	pub(crate) fn lock(&self) -> MutexGuard<'_, Inner> {
+	/// Every cursor op, in the one place that holds them. A transport — axum's JSON, or a bundle that
+	/// fetched the tape and scrubs it in its own heap — carries [`Op`] here and carries the frame back;
+	/// neither knows what any of them mean.
+	pub fn dispatch(&self, op: Op) -> ActivationFrame {
+		let mut t = self.lock();
+		match op {
+			Op::Status => t.frame(),
+			Op::Step { n } => t.step(n),
+			Op::Seek { tick } => t.seek(tick),
+			Op::SeekTs { ts_ns } => t.seek_ts(ts_ns),
+			Op::StepUntil { node } => t.step_until(&node),
+			Op::StepUntilChange { nodes } => t.step_until_change(&nodes),
+		}
+	}
+
+	/// The static graph, in step order. Empty until the recording's first tick closes, so what a
+	/// client topo-sorts is a graph with a frame behind it.
+	pub fn topology(&self) -> Vec<TopoNode> {
+		self.lock().topology()
+	}
+
+	/// The chart payload. Snapshotted per call — under a live feed it keeps growing.
+	pub fn day(&self) -> DayOut {
+		self.lock().day()
+	}
+
+	fn lock(&self) -> MutexGuard<'_, Inner> {
 		// Served concurrently with the recording it describes: a panicking handler must not cost the
 		// run its tape. Every op leaves the tape consistent, so the inner value is still readable.
 		self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -308,6 +360,7 @@ impl Viz {
 
 /// The write side, and the only one: the graph thread's whole share of the recording. Not `Clone` —
 /// it owns the handoff to the tape thread and the buffers being recycled across it.
+#[cfg(feature = "server")]
 pub struct Recorder {
 	tx: SyncSender<TickMsg>,
 	/// Drained columns coming back from the tape with their capacities intact, which is what makes a
@@ -334,6 +387,7 @@ pub struct Recorder {
 	idx: usize,
 	timed: bool,
 }
+#[cfg(feature = "server")]
 impl Recorder {
 	/// Opens a tick and hands back the observer for it:
 	/// `graph.tick_obs(ts, batches, &mut recorder.at(ts))`. Dropping the returned [`Rec`] — at the end
@@ -369,7 +423,9 @@ impl Recorder {
 
 /// One opened tick's observer. Everything it writes goes into the recorder's recycled buffers; the
 /// tick crosses to the tape thread when this drops.
+#[cfg(feature = "server")]
 pub struct Rec<'a>(&'a mut Recorder);
+
 /// [`Inner`]'s persisted fields. Separate rather than serialized in place because two of the tape's
 /// are not data: `dropped` is shared with a recorder that no longer exists on the read-back side, and
 /// `sealed` is what a file is.
@@ -389,6 +445,7 @@ struct TapeFile {
 	cursor: usize,
 }
 
+#[cfg(feature = "server")]
 impl Observer for Rec<'_> {
 	/// A Jacobian is read by exactly one thing — [`Inner::frame`], for the single tick a client is
 	/// parked on — and [`Inner::thin`] will drop most of a long run, so the cheap answer would be to
@@ -451,6 +508,7 @@ impl Observer for Rec<'_> {
 	}
 }
 
+#[cfg(feature = "server")]
 impl Drop for Rec<'_> {
 	fn drop(&mut self) {
 		// An unwinding sweep left a half-recorded tick, and the assert below would trade the panic
@@ -486,6 +544,7 @@ impl Drop for Rec<'_> {
 
 /// A node's identity, sent the one tick it first steps on. Every field is `&'static`, so what
 /// crosses the channel is pointers and the naming happens on the tape thread.
+#[cfg(feature = "server")]
 struct Meta {
 	node: &'static str,
 	deps: &'static [&'static str],
@@ -498,6 +557,7 @@ struct Meta {
 	deriv: Option<String>,
 }
 
+#[cfg(feature = "server")]
 struct TickMsg {
 	ts_ns: i64,
 	acts: Acts,
@@ -544,6 +604,7 @@ impl Acts {
 
 	/// Closes the node being appended. The ends are asserted rather than widened: a tick that
 	/// overflows one is a graph that changed shape, not a tape that should quietly keep going.
+	#[cfg(feature = "server")]
 	fn close(&mut self) {
 		let end = |n: usize| u32::try_from(n).expect("one tick's columns are far under 4G");
 		self.ends.push(Ends {
@@ -555,6 +616,7 @@ impl Acts {
 		});
 	}
 
+	#[cfg(feature = "server")]
 	fn clear(&mut self) {
 		self.outs.clear();
 		self.vals.clear();
@@ -613,9 +675,11 @@ impl Tick {
 	}
 }
 
-pub(crate) struct Inner {
+struct Inner {
 	price_node: Option<String>,
+	#[cfg(feature = "server")]
 	capacity: usize,
+	#[cfg(feature = "server")]
 	bucket_ms: i64,
 	topology: Vec<TopoNode>,
 	/// `topology`'s per-node step-cost estimates, positional with it.
@@ -625,9 +689,11 @@ pub(crate) struct Inner {
 	/// Ticks ever absorbed, thinned-away ones included.
 	opened: usize,
 	/// Per-node fire count so far, positional with `topology` — what [`Tick::ranks`] is read off.
+	#[cfg(feature = "server")]
 	fires: Vec<usize>,
 	/// Per-node "keep one fire in `2^keep[i]`", positional with `topology` and only ever raised —
 	/// see [`Inner::thin`].
+	#[cfg(feature = "server")]
 	keep: Vec<u8>,
 	/// Per node, ascending, the `ticks` *positions* it fired on — what [`Inner::held`] binary-searches
 	/// instead of scanning. Positions and not `abs` ids because between thinning passes `ticks` only
@@ -649,6 +715,7 @@ pub(crate) struct Inner {
 
 impl Inner {
 	/// Takes one finished tick onto the tape, and hands back the act buffers a thinning pass freed.
+	#[cfg(feature = "server")]
 	fn absorb(&mut self, msg: TickMsg) -> Vec<Acts> {
 		let TickMsg { ts_ns, acts, meta, spans } = msg;
 		for m in meta.into_iter().flatten() {
@@ -741,6 +808,7 @@ impl Inner {
 	/// a quarter of the buffer free — one O(capacity) pass per `capacity / 4` ticks.
 	///
 	/// The dropped ticks' act buffers go back to the recorder rather than being freed here.
+	#[cfg(feature = "server")]
 	fn thin(&mut self) -> Vec<Acts> {
 		let whole = self.opened.saturating_sub(self.capacity / 2);
 		let pre = self.ticks.iter().take_while(|t| t.abs < whole);
@@ -809,7 +877,7 @@ impl Inner {
 
 	/// Empty until the first tick is addressable, so what a client topo-sorts is a graph with a frame
 	/// behind it.
-	pub(crate) fn topology(&self) -> Vec<TopoNode> {
+	fn topology(&self) -> Vec<TopoNode> {
 		if self.head() < 1 {
 			return Vec::new();
 		}
@@ -818,7 +886,7 @@ impl Inner {
 		self.topology.iter().zip(&self.cost).map(|(n, c)| TopoNode { cost_ns: c.ns(), ..n.clone() }).collect()
 	}
 
-	pub(crate) fn day(&self) -> DayOut {
+	fn day(&self) -> DayOut {
 		// A buffer's series is its source's, element for element — charting it would draw every
 		// buffered pane twice. Nothing names one in dep position (`Buffering<C, R>` forwards
 		// `Cell::NAME` to `C`'s), so dropping the pane leaves no dangling edge behind.
@@ -838,7 +906,7 @@ impl Inner {
 		}
 	}
 
-	pub(crate) fn frame(&self) -> ActivationFrame {
+	fn frame(&self) -> ActivationFrame {
 		let tick = self.pos().map(|p| (p, &self.ticks[p]));
 		ActivationFrame {
 			tick: tick.map_or(0, |(_, t)| t.abs + 1),
@@ -898,7 +966,7 @@ impl Inner {
 
 	/// `n` retained ticks on, not `n` absolute ones: in a thinned stretch the ticks between two
 	/// retained ones are gone, and stepping over them would stall the cursor instead of moving it.
-	pub(crate) fn step(&mut self, n: usize) -> ActivationFrame {
+	fn step(&mut self, n: usize) -> ActivationFrame {
 		let target = self.pos().map_or(0, |p| p.saturating_add(n));
 		self.park(target);
 		let mut f = self.frame();
@@ -906,7 +974,7 @@ impl Inner {
 		f
 	}
 
-	pub(crate) fn seek(&mut self, tick: usize) -> ActivationFrame {
+	fn seek(&mut self, tick: usize) -> ActivationFrame {
 		self.park(self.ticks.partition_point(|t| t.abs < tick).saturating_sub(1));
 		let mut f = self.frame();
 		f.pending = !self.sealed && tick > self.head();
@@ -916,7 +984,7 @@ impl Inner {
 	/// Parks on the newest tick at or before `ts_ns` — what a click on the chart's time axis names.
 	/// ponytail: linear, like [`Inner::held`]; a feed's tick timestamps are near-sorted but not
 	/// guaranteed so, and a binary search would land off-by-a-batch on the ones that weave.
-	pub(crate) fn seek_ts(&mut self, ts_ns: i64) -> ActivationFrame {
+	fn seek_ts(&mut self, ts_ns: i64) -> ActivationFrame {
 		self.park(self.ticks.iter().rposition(|t| t.ts_ns <= ts_ns).unwrap_or(0));
 		let mut f = self.frame();
 		f.pending = !self.sealed && self.ticks.back().is_some_and(|t| t.ts_ns < ts_ns);
@@ -924,7 +992,7 @@ impl Inner {
 	}
 
 	/// Advance until `node` (trimmed name) fires, or the recording ends.
-	pub(crate) fn step_until(&mut self, node: &str) -> ActivationFrame {
+	fn step_until(&mut self, node: &str) -> ActivationFrame {
 		match self.topology.iter().position(|n| n.node == node) {
 			Some(i) => self.scan(|t| t.acts.get(i).is_some_and(|a| a.vals.is_some())),
 			// A name the graph does not carry is still a search that reached nothing — `c` pressed before
@@ -935,7 +1003,7 @@ impl Inner {
 
 	/// Advance until any of `nodes` fires with an out *different from its value at call time* (so a
 	/// node stuck emitting the same value is skipped through to its next actual change).
-	pub(crate) fn step_until_change(&mut self, nodes: &[String]) -> ActivationFrame {
+	fn step_until_change(&mut self, nodes: &[String]) -> ActivationFrame {
 		let watched: Vec<usize> = self.topology.iter().enumerate().filter(|(_, n)| nodes.contains(&n.node)).map(|(i, _)| i).collect();
 		let baseline: Vec<Option<String>> = {
 			let now = self.frame();
@@ -975,6 +1043,7 @@ impl Inner {
 	}
 }
 
+#[cfg(feature = "server")]
 impl From<Fidelity> for FidelityOut {
 	fn from(f: Fidelity) -> Self {
 		match f {
@@ -985,6 +1054,7 @@ impl From<Fidelity> for FidelityOut {
 	}
 }
 
+#[cfg(feature = "server")]
 impl From<&Plot> for PlotOut {
 	fn from(p: &Plot) -> Self {
 		let ink = |i: &Ink| InkOut { l: i.l, c: i.c, a: i.a };
@@ -1031,6 +1101,7 @@ fn index<'a>(ticks: impl IntoIterator<Item = &'a Tick>) -> Vec<Vec<usize>> {
 /// lowercase — Rust's own convention, and the only thing telling `nodes::` from `Horizon::`, whose
 /// variant would otherwise be stranded as a bare `Span(..)`. `type_name` strings are build-local,
 /// display-only.
+#[cfg(feature = "server")]
 fn trim(name: &str) -> String {
 	let mut out = String::with_capacity(name.len());
 	// Start of the segment being accumulated: `::` rewinds to it when what precedes is a module.
@@ -1057,7 +1128,7 @@ fn trim(name: &str) -> String {
 	out
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "server"))]
 mod tests {
 	use trading_data_dag::Plot;
 
